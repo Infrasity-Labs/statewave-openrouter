@@ -13,7 +13,9 @@ An OpenAI-compatible proxy that sits between your app and
    call knows about this one.
 
 Requests without a subject are forwarded untouched - memory is opt-in per
-request, not a global mode.
+request, not a global mode. Which subject a request may touch is either
+trusted from a header or derived from a signed token; see
+[Authenticating the subject](#authenticating-the-subject).
 
 > **Part of the Statewave ecosystem:** [Server](https://github.com/smaramwbc/statewave) · [Python SDK](https://github.com/smaramwbc/statewave-py) · [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) · [Docs](https://github.com/smaramwbc/statewave-docs) · [Website](https://statewave.ai)
 >
@@ -25,9 +27,15 @@ request, not a global mode.
 
 ```bash
 pip install -e .
-cp .env.example .env        # set OPENROUTER_API_KEY and STATEWAVE_URL
+cp .env.example .env        # set OPENROUTER_API_KEY, STATEWAVE_URL, and a
+                            # subject-trust mode (see below)
 uvicorn statewave_openrouter:app --port 8080
 ```
+
+The examples below name a subject, so the proxy needs to be told it may trust
+one. For a local run, `STATEWAVE_TRUST_CLIENT_SUBJECT=1` in `.env` is enough;
+for anything reachable by untrusted clients, set `PROXY_JWT_SECRET` instead and
+see [Authenticating the subject](#authenticating-the-subject).
 
 Then point any OpenAI-compatible client at the proxy and name a subject:
 
@@ -84,6 +92,29 @@ Body fields are stripped before the request reaches OpenRouter. Multi-tenant
 Statewave deployments: send `X-Tenant-ID` and it is forwarded, or pin one with
 `STATEWAVE_TENANT_ID`.
 
+## Authenticating the subject
+
+By default the proxy trusts `X-Statewave-Subject` from anyone who can reach it,
+which is fine on a private network and not fine on a public port. Pick one:
+
+| Set | Effect |
+| --- | --- |
+| Nothing | A request that carries a subject gets `400 statewave_untrusted_subject`. Subject-less pass-through still works. |
+| `STATEWAVE_TRUST_CLIENT_SUBJECT=1` | `X-Statewave-Subject` is trusted as-is. Use it single-tenant, or behind a gateway that already authenticates callers. |
+| `PROXY_JWT_SECRET=<hs256 secret>` | Every chat call must send `X-Statewave-Token: <jwt>` signed with that secret; the subject is the token's `sub` claim, and `X-Statewave-Subject` is ignored. A missing or bad token is `401`. |
+
+With `PROXY_JWT_SECRET` set, add `STATEWAVE_TRUST_CLIENT_SUBJECT=1` too if a
+trusted gateway needs to keep choosing the subject per request while still
+presenting its own token.
+
+```bash
+TOKEN=$(python -c "import jwt; print(jwt.encode({'sub':'user:42'}, '$PROXY_JWT_SECRET', algorithm='HS256'))")
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  -H "X-Statewave-Token: $TOKEN" \
+  -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"What coffee do I like?"}]}'
+```
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -99,6 +130,8 @@ Statewave deployments: send `X-Tenant-ID` and it is forwarded, or pin one with
 | `STATEWAVE_EPISODE_SOURCE` | `openrouter-proxy` | `source` on written episodes |
 | `STATEWAVE_CALLER_TYPE` | `openrouter-gateway` | Caller class Statewave policy rules match on |
 | `STATEWAVE_CALLER_ID` | = `STATEWAVE_CALLER_TYPE` | Caller identity sent on every retrieval |
+| `PROXY_JWT_SECRET` | - | HS256 secret; when set, chat calls need a valid `X-Statewave-Token` and the subject is its `sub` claim |
+| `STATEWAVE_TRUST_CLIENT_SUBJECT` | off | Trust the `X-Statewave-Subject` header (see [Authenticating the subject](#authenticating-the-subject)) |
 | `PROXY_TIMEOUT` | `120` | Upstream request timeout (seconds) |
 
 ## Requires Statewave >= 1.0.0
@@ -117,7 +150,7 @@ the episode write fails, it is logged and the completion still goes through - ju
 
 ## Everything else
 
-Any other path (`/v1/models`, `/v1/credits`, …) is proxied straight to
+Any other path (`/v1/models`, `/v1/credits`, and so on) is proxied straight to
 OpenRouter, so the proxy is a drop-in base URL replacement.
 
 ## Tests

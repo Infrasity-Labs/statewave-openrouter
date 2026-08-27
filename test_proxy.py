@@ -10,11 +10,17 @@ import asyncio
 import json
 
 import httpx
+import jwt
 import pytest
 
 import statewave_openrouter as sw
 
 CONTEXT = "Known facts:\n- prefers dark roast"
+SECRET = "test-secret-padded-to-32-bytes-min!"
+
+
+def token(sub, secret=SECRET, **claims):
+    return jwt.encode({"sub": sub, **claims}, secret, algorithm="HS256")
 
 
 @pytest.fixture
@@ -60,6 +66,12 @@ def proxy():
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=sw.app), base_url="http://proxy")
 
 
+@pytest.fixture
+def trusted(monkeypatch):
+    """Model a single-tenant deploy that trusts the caller-supplied subject."""
+    monkeypatch.setattr(sw, "TRUST_CLIENT_SUBJECT", True)
+
+
 async def drain():
     """Let the fire-and-forget episode writes finish."""
     await asyncio.gather(*list(sw._background))
@@ -73,7 +85,7 @@ def body_of(request):
     return json.loads(request.read())
 
 
-async def test_context_injected_and_turn_written(calls, proxy):
+async def test_context_injected_and_turn_written(calls, proxy, trusted):
     response = await proxy.post(
         "/v1/chat/completions",
         headers={"X-Statewave-Subject": "user:42", "X-Tenant-ID": "acme"},
@@ -141,7 +153,7 @@ async def test_bad_id_is_rejected_before_any_upstream_call(calls, proxy, headers
     assert calls == []
 
 
-async def test_long_message_is_truncated_to_the_server_cap(calls, proxy):
+async def test_long_message_is_truncated_to_the_server_cap(calls, proxy, trusted):
     await proxy.post(
         "/v1/chat/completions",
         headers={"X-Statewave-Subject": "user:42"},
@@ -151,7 +163,7 @@ async def test_long_message_is_truncated_to_the_server_cap(calls, proxy):
     assert len(body_of(sent_to(calls, "/v1/context")[0])["task"]) == sw.TASK_MAX
 
 
-async def test_stream_passes_through_verbatim_and_records_reply(calls, proxy):
+async def test_stream_passes_through_verbatim_and_records_reply(calls, proxy, trusted):
     chunks = []
     async with proxy.stream(
         "POST",
@@ -168,7 +180,7 @@ async def test_stream_passes_through_verbatim_and_records_reply(calls, proxy):
     assert payload["messages"][1] == {"role": "assistant", "content": "dark roast"}
 
 
-async def test_statewave_down_still_answers(calls, proxy, monkeypatch):
+async def test_statewave_down_still_answers(calls, proxy, monkeypatch, trusted):
     # Statewave answers 404 for every path -> no context, no episode, still a completion.
     monkeypatch.setattr(sw, "STATEWAVE_URL", "http://localhost:8000/gone")
     response = await proxy.post(
@@ -182,7 +194,7 @@ async def test_statewave_down_still_answers(calls, proxy, monkeypatch):
     assert forwarded["messages"] == [{"role": "user", "content": "coffee?"}]
 
 
-async def test_shutdown_drains_writes_then_closes_client(calls, proxy):
+async def test_shutdown_drains_writes_then_closes_client(calls, proxy, trusted):
     # No drain() here on purpose: shutdown is what has to finish the write,
     # and it has to do it before the client is closed under it.
     await proxy.post(
@@ -219,3 +231,64 @@ async def test_upstream_rate_limit_headers_survive_the_round_trip(calls, proxy):
     for response in (chat, models):
         assert response.headers["x-ratelimit-remaining"] == "42"
         assert response.headers["x-request-id"] == "or-req-1"
+
+
+# --- M2: subject is derived from a verified token, not asserted by the caller ---
+
+
+async def test_a_subject_with_no_trust_mode_is_rejected(calls, proxy):
+    response = await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "user:42"},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "statewave_untrusted_subject"
+    assert calls == []
+
+
+async def test_token_required_once_a_secret_is_set(calls, proxy, monkeypatch):
+    monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
+    response = await proxy.post(
+        "/v1/chat/completions",
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 401
+    assert response.json()["error"]["type"] == "statewave_auth_required"
+    assert calls == []
+
+
+async def test_a_token_signed_with_the_wrong_secret_is_rejected(calls, proxy, monkeypatch):
+    monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
+    response = await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Token": token("user:42", secret="a-different-secret-also-32-bytes-x!")},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 401
+    assert response.json()["error"]["type"] == "statewave_bad_token"
+    assert calls == []
+
+
+async def test_forged_subject_header_loses_to_the_token(calls, proxy, monkeypatch):
+    monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
+    await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "user:99", "X-Statewave-Token": token("user:42")},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    await drain()
+    assert body_of(sent_to(calls, "/v1/context")[0])["subject_id"] == "user:42"
+    assert body_of(sent_to(calls, "/v1/episodes")[0])["subject_id"] == "user:42"
+
+
+async def test_trusted_gateway_may_still_override_the_token_subject(calls, proxy, monkeypatch):
+    monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
+    monkeypatch.setattr(sw, "TRUST_CLIENT_SUBJECT", True)
+    await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "team:7", "X-Statewave-Token": token("gateway:1")},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    await drain()
+    assert body_of(sent_to(calls, "/v1/context")[0])["subject_id"] == "team:7"

@@ -8,11 +8,19 @@ All notable changes to this project are documented here. Format loosely follows
 ### Added
 - `GET /health` liveness probe that never contacts OpenRouter (O2).
 - CI now runs on Python 3.11, 3.12 and 3.13 (O5).
+- `PROXY_JWT_SECRET`: verify an inbound `X-Statewave-Token` (HS256 JWT) and take
+  the subject from its `sub` claim. With the secret set, every chat call needs a
+  valid token, which also closes the open-port credit drain (S2, S3).
+- `STATEWAVE_TRUST_CLIENT_SUBJECT`: opt back into trusting the
+  `X-Statewave-Subject` header (single-tenant, or a self-authing gateway).
 
 ### Changed
 - Non-stream and pass-through responses relay all upstream headers
-  (`x-ratelimit-*`, OpenRouter request id, …) via a shared `_relay` builder,
-  instead of keeping only `content-type` (O3). The streaming path is unchanged.
+  (`x-ratelimit-*`, OpenRouter request id, and the rest) via a shared `_relay`
+  builder, instead of keeping only `content-type` (O3). Streaming path unchanged.
+- **Breaking:** a caller-supplied `X-Statewave-Subject` is no longer trusted by
+  default. Without `PROXY_JWT_SECRET` or `STATEWAVE_TRUST_CLIENT_SUBJECT` set, a
+  request carrying a subject now gets `400 statewave_untrusted_subject`.
 
 ## [0.1.0] - 2026-08-27
 

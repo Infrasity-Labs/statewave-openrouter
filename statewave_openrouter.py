@@ -21,6 +21,7 @@ import re
 from contextlib import asynccontextmanager
 
 import httpx
+import jwt
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -30,6 +31,13 @@ OPENROUTER_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 STATEWAVE_URL = os.getenv("STATEWAVE_URL", "http://localhost:8000").rstrip("/")
 STATEWAVE_KEY = os.getenv("STATEWAVE_API_KEY", "")
+# HS256 secret for verifying inbound `X-Statewave-Token` JWTs. Set it and every
+# chat call needs a valid token (closes the open-port credit drain), and the
+# subject comes from the token `sub` - the client can no longer assert it.
+JWT_SECRET = os.getenv("PROXY_JWT_SECRET", "")
+# Opt back into trusting a caller-supplied subject: single-tenant deploys with
+# no token, or a gateway that authenticates itself but manages many subjects.
+TRUST_CLIENT_SUBJECT = os.getenv("STATEWAVE_TRUST_CLIENT_SUBJECT", "").lower() in ("1", "true", "yes")
 CONTEXT_TOKENS = int(os.getenv("STATEWAVE_CONTEXT_TOKENS", "1500"))
 COMPILE_AFTER_TURN = os.getenv("STATEWAVE_COMPILE_AFTER_TURN", "").lower() in ("1", "true", "yes")
 EPISODE_SOURCE = os.getenv("STATEWAVE_EPISODE_SOURCE", "openrouter-proxy")
@@ -63,6 +71,10 @@ def _relay(upstream: httpx.Response) -> Response:
     """
     headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _DROP_RESPONSE_HEADERS}
     return Response(upstream.content, status_code=upstream.status_code, headers=headers)
+
+
+def _error(status: int, message: str, error_type: str) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"error": {"message": message, "type": error_type}})
 
 
 @asynccontextmanager
@@ -208,23 +220,60 @@ async def _write_turn(subject, session_id, user_text, reply, model, headers) -> 
         log.warning("statewave episode write failed for %s: %s", subject, exc)
 
 
+def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | None, JSONResponse | None]:
+    """Decide which subject this request is allowed to touch.
+
+    Validate any supplied ids, then apply the trust rule: with `JWT_SECRET` set
+    the subject comes from a verified token; without it a client-supplied
+    subject is honoured only when `TRUST_CLIENT_SUBJECT` is on. Returns
+    ``(subject, session_id, error)`` - `error` is a response to return as-is.
+    """
+    hdr_subject = request.headers.get("x-statewave-subject") or body.pop("statewave_subject", None)
+    session_id = request.headers.get("x-statewave-session") or body.pop("statewave_session", None)
+    for field, value in (("subject", hdr_subject), ("session", session_id)):
+        if value and not ID_RE.fullmatch(value):
+            return None, None, _error(
+                400,
+                f"statewave {field} must be 1-256 chars of letters, digits, "
+                "underscore, dot, dash or colon",
+                "statewave_bad_request",
+            )
+
+    if JWT_SECRET:
+        token = request.headers.get("x-statewave-token", "").strip()
+        if token[:7].lower() == "bearer ":
+            token = token[7:].strip()
+        if not token:
+            return None, None, _error(
+                401, "statewave requires a token in X-Statewave-Token", "statewave_auth_required"
+            )
+        try:
+            claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        except jwt.InvalidTokenError as exc:
+            return None, None, _error(401, f"invalid statewave token: {exc}", "statewave_bad_token")
+        subject = hdr_subject if (TRUST_CLIENT_SUBJECT and hdr_subject) else claims.get("sub")
+        if subject and not ID_RE.fullmatch(subject):
+            return None, None, _error(
+                400, "statewave token 'sub' is not a valid subject id", "statewave_bad_request"
+            )
+        return subject, session_id, None
+
+    if hdr_subject and not TRUST_CLIENT_SUBJECT:
+        return None, None, _error(
+            400,
+            "statewave subject supplied but not trusted: set PROXY_JWT_SECRET to derive it "
+            "from a token, or STATEWAVE_TRUST_CLIENT_SUBJECT=1 to trust the header",
+            "statewave_untrusted_subject",
+        )
+    return hdr_subject, session_id, None
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()
-    subject = request.headers.get("x-statewave-subject") or body.pop("statewave_subject", None)
-    session_id = request.headers.get("x-statewave-session") or body.pop("statewave_session", None)
-    for field, value in (("subject", subject), ("session", session_id)):
-        if value and not ID_RE.fullmatch(value):
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": {
-                        "message": f"statewave {field} must be 1-256 chars of letters, digits, "
-                        "underscore, dot, dash or colon",
-                        "type": "statewave_bad_request",
-                    }
-                },
-            )
+    subject, session_id, error = _resolve_subject(request, body)
+    if error:
+        return error
     sw_headers = _statewave_headers(request)
     user_text = _last_user_text(body)
 
