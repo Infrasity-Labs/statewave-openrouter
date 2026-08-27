@@ -13,11 +13,21 @@ All notable changes to this project are documented here. Format loosely follows
   valid token, which also closes the open-port credit drain (S2, S3).
 - `STATEWAVE_TRUST_CLIENT_SUBJECT`: opt back into trusting the
   `X-Statewave-Subject` header (single-tenant, or a self-authing gateway).
+- `POST /v1/completions` (legacy) is memory-aware: context is prepended to the
+  `prompt`, the turn is written back (F12).
+- `POST /v1/responses` is memory-aware: context is merged into `instructions`,
+  the turn is written back (F13).
+- On startup the proxy pings Statewave `/healthz` and logs a warning if the
+  server is older than 1.0.0 (O6). Best-effort, never blocks boot.
 
 ### Changed
 - Non-stream and pass-through responses relay all upstream headers
   (`x-ratelimit-*`, OpenRouter request id, and the rest) via a shared `_relay`
   builder, instead of keeping only `content-type` (O3). Streaming path unchanged.
+- The three memory-aware endpoints now share one handler (`_memory_proxy`) with
+  per-endpoint shape adapters.
+- An empty assistant reply no longer writes an episode on the non-stream path
+  either; both paths now agree (F14).
 - **Breaking:** a caller-supplied `X-Statewave-Subject` is no longer trusted by
   default. Without `PROXY_JWT_SECRET` or `STATEWAVE_TRUST_CLIENT_SUBJECT` set, a
   request carrying a subject now gets `400 statewave_untrusted_subject`.

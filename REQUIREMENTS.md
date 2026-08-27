@@ -1,11 +1,12 @@
 # statewave-openrouter - Requirements
 
-Scope: one file (`statewave_openrouter.py`, ~350 lines) that fronts OpenRouter
+Scope: one file (`statewave_openrouter.py`, ~450 lines) that fronts OpenRouter
 with Statewave memory. Anything that would be a second service belongs in
 `smaramwbc/statewave`, not here.
 
-Status as of 2026-08-27: M0-M2 done (in git as `Infrasity-Labs/statewave-openrouter`,
-tag `v0.1.0`; operable; auth-gated). Next up M3. Version 0.1.0, Alpha.
+Status as of 2026-08-27: M0-M3 done (in git as `Infrasity-Labs/statewave-openrouter`,
+tag `v0.1.0`; operable; auth-gated; all three completion surfaces memory-aware).
+Next up M4 (v1.0.0). Version 0.1.0, Alpha.
 
 Legend: **Done** = shipped and covered by a test in `test_proxy.py`.
 **Gap** = not built. **Won't** = deliberately out of scope.
@@ -27,9 +28,9 @@ Legend: **Done** = shipped and covered by a test in `test_proxy.py`.
 | F9 | `caller_id` + `caller_type` sent on every retrieval; empty env value must not become an empty caller_id | Done |
 | F10 | `X-Tenant-ID` forwarded, or pinned via `STATEWAVE_TENANT_ID` | Done |
 | F11 | Optional async compile after each turn (`STATEWAVE_COMPILE_AFTER_TURN`) | Done |
-| F12 | `POST /v1/completions` (legacy) is memory-aware | **Gap** - falls through to F8 |
-| F13 | `POST /v1/responses` is memory-aware | **Gap** - falls through to F8 |
-| F14 | Non-stream path writes an episode even when the reply text is empty; stream path skips it. Pick one. | **Gap** - asymmetry, `chat_completions` vs `relay` |
+| F12 | `POST /v1/completions` (legacy) is memory-aware | Done - context prefixed to `prompt`; shares `_memory_proxy` |
+| F13 | `POST /v1/responses` is memory-aware | Done - context merged into `instructions`; typed-event SSE reply parser |
+| F14 | Non-stream path writes an episode even when the reply text is empty; stream path skips it. Pick one. | Done - picked skip; both paths guard `if reply` in `_memory_proxy` |
 | F15 | Multi-turn history summarisation, local caching, prompt templating | Won't - Statewave's job |
 
 ## Reliability
@@ -49,7 +50,7 @@ Legend: **Done** = shipped and covered by a test in `test_proxy.py`.
 | --- | --- | --- |
 | S1 | Caller's `Authorization` forwarded verbatim; `OPENROUTER_API_KEY` used only as fallback | Done |
 | S2 | **Subject is caller-asserted.** Any client that can reach the proxy can send `X-Statewave-Subject: user:99` and read/write that subject's memory. | Done - `PROXY_JWT_SECRET` derives the subject from a verified `X-Statewave-Token`; header accepted only under `STATEWAVE_TRUST_CLIENT_SUBJECT` |
-| S3 | With `OPENROUTER_API_KEY` set and no proxy-level auth, anyone who can reach the port spends the operator's OpenRouter credits | Done for `/v1/chat/completions` - a valid token is required once `PROXY_JWT_SECRET` is set. F12/F13 paths and the pass-through routes are still open |
+| S3 | With `OPENROUTER_API_KEY` set and no proxy-level auth, anyone who can reach the port spends the operator's OpenRouter credits | Done for all three completion endpoints - `PROXY_JWT_SECRET` set means `_memory_proxy` rejects a tokenless call with 401. The `GET`-heavy pass-through routes (models, credits) stay open by design |
 | S4 | Statewave API key never reaches OpenRouter and vice versa (separate header builders) | Done |
 | S5 | Secrets never logged - log lines carry subject ids only | Done |
 
@@ -68,7 +69,7 @@ one check in `_resolve_subject` - not an auth framework.
 | O3 | Upstream response headers relayed (`x-ratelimit-*`, OpenRouter request id) | Done - shared `_relay` builder; stream path still drops them |
 | O4 | CI: ruff + pytest on 3.11 | Done |
 | O5 | CI matrix covers 3.12 and 3.13 - both claimed in `pyproject.toml` classifiers, neither tested | Done |
-| O6 | Startup warns when the Statewave server is older than 1.0.0 (README states the floor; nothing enforces it) | **Gap** |
+| O6 | Startup warns when the Statewave server is older than 1.0.0 (README states the floor; nothing enforces it) | Done - `_warn_if_statewave_outdated` pings `/healthz` on boot, reads `version`; missing endpoint/field is silently fine |
 | O7 | Dockerfile + published image | **Gap** |
 | O8 | Published to PyPI, tagged, CHANGELOG | **Gap** |
 
@@ -84,7 +85,7 @@ single-file proxy, not a platform.
 | ~~Wed Aug 26 to Fri Aug 28~~ **done 2026-08-27** | **M0 - exist in git** | Initial commit of the current tree, tag `v0.1.0`, CHANGELOG. O8 minus PyPI. |
 | ~~Mon Aug 31 to Fri Sep 4~~ **done 2026-08-27** | **M1 - operable** | O2 `/health`, O3 header relay (shared `_relay` builder), O5 CI matrix. Tests: probe hits no upstream; rate-limit header survives a round trip. Stream path still drops upstream headers - folded into R5's rework. |
 | ~~Mon Sep 7 to Fri Sep 11~~ **done 2026-08-27** | **M2 - trustworthy** | S2 + S3: `PROXY_JWT_SECRET` verifies an `X-Statewave-Token` JWT and derives the subject from `sub`; `STATEWAVE_TRUST_CLIENT_SUBJECT` opt-out for single-tenant deploys. Tests: forged subject loses to the token; missing/bad token is 401; subject with no trust mode is 400; trusted gateway still overrides. |
-| **Mon Sep 14 to Fri Sep 18** | **M3 - surface complete** | F12, F13 (`/v1/completions`, `/v1/responses` memory-aware - extract the subject/context/episode logic the three now share), F14 empty-reply symmetry, O6 version warning. |
+| ~~Mon Sep 14 to Fri Sep 18~~ **done 2026-08-27** | **M3 - surface complete** | F12, F13 (`/v1/completions`, `/v1/responses` memory-aware via a shared `_memory_proxy` + per-shape adapters), F14 empty-reply symmetry, O6 version warning. |
 | **Mon Sep 21 to Fri Sep 25** | **M4 - v1.0.0** | R5 incremental SSE parse, O7 Docker image, PyPI publish, README rewrite against the final surface. Tag `v1.0.0`, drop Alpha classifier. |
 
 Critical path: M0 → M2. M1 and M3 can swap if a deployment target appears first.

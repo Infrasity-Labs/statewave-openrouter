@@ -8,9 +8,14 @@ An OpenAI-compatible proxy that sits between your app and
 [Statewave](https://github.com/smaramwbc/statewave) memory:
 
 1. **Before** forwarding, it assembles a Statewave context bundle for the
-   request's subject and prepends it as a system message.
+   request's subject and injects it (a system message for
+   `/v1/chat/completions`, a `prompt` prefix for `/v1/completions`, merged into
+   `instructions` for `/v1/responses`).
 2. **After** the reply, it writes the turn back as an episode, so the next
    call knows about this one.
+
+All three completion endpoints are memory-aware; everything else is proxied
+straight through.
 
 Requests without a subject are forwarded untouched - memory is opt-in per
 request, not a global mode. Which subject a request may touch is either
@@ -130,7 +135,7 @@ curl http://localhost:8080/v1/chat/completions \
 | `STATEWAVE_EPISODE_SOURCE` | `openrouter-proxy` | `source` on written episodes |
 | `STATEWAVE_CALLER_TYPE` | `openrouter-gateway` | Caller class Statewave policy rules match on |
 | `STATEWAVE_CALLER_ID` | = `STATEWAVE_CALLER_TYPE` | Caller identity sent on every retrieval |
-| `PROXY_JWT_SECRET` | - | HS256 secret; when set, chat calls need a valid `X-Statewave-Token` and the subject is its `sub` claim |
+| `PROXY_JWT_SECRET` | - | HS256 secret; when set, every completion call needs a valid `X-Statewave-Token` and the subject is its `sub` claim |
 | `STATEWAVE_TRUST_CLIENT_SUBJECT` | off | Trust the `X-Statewave-Subject` header (see [Authenticating the subject](#authenticating-the-subject)) |
 | `PROXY_TIMEOUT` | `120` | Upstream request timeout (seconds) |
 
@@ -143,6 +148,10 @@ one in `policy_mode: enforce`, an absent `caller_type` is the
 least-privileged caller and quietly thins the bundle. The proxy always
 sends both.
 
+On startup the proxy pings `GET {STATEWAVE_URL}/healthz` and logs a warning if
+the reported `version` is below 1.0.0. It is best-effort: a server that does not
+expose the endpoint or field just boots without the warning.
+
 ## Failure behaviour
 
 Statewave is an enhancement, never a hard dependency. If context assembly or
@@ -150,8 +159,9 @@ the episode write fails, it is logged and the completion still goes through - ju
 
 ## Everything else
 
-Any other path (`/v1/models`, `/v1/credits`, and so on) is proxied straight to
-OpenRouter, so the proxy is a drop-in base URL replacement.
+Any path other than the three completion endpoints (`/v1/models`, `/v1/credits`,
+and so on) is proxied straight to OpenRouter, so the proxy is a drop-in base URL
+replacement.
 
 ## Tests
 
