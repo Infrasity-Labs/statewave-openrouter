@@ -4,8 +4,8 @@ Scope: one file (`statewave_openrouter.py`, ~350 lines) that fronts OpenRouter
 with Statewave memory. Anything that would be a second service belongs in
 `smaramwbc/statewave`, not here.
 
-Status as of 2026-08-26: code is written and tested, **zero commits exist**.
-Version 0.1.0, Alpha.
+Status as of 2026-08-27: M0-M2 done (in git as `Infrasity-Labs/statewave-openrouter`,
+tag `v0.1.0`; operable; auth-gated). Next up M3. Version 0.1.0, Alpha.
 
 Legend: **Done** = shipped and covered by a test in `test_proxy.py`.
 **Gap** = not built. **Won't** = deliberately out of scope.
@@ -48,15 +48,16 @@ Legend: **Done** = shipped and covered by a test in `test_proxy.py`.
 | ID | Requirement | Status |
 | --- | --- | --- |
 | S1 | Caller's `Authorization` forwarded verbatim; `OPENROUTER_API_KEY` used only as fallback | Done |
-| S2 | **Subject is caller-asserted.** Any client that can reach the proxy can send `X-Statewave-Subject: user:99` and read/write that subject's memory. | **Gap - blocks any deployment where clients are not trusted** |
-| S3 | With `OPENROUTER_API_KEY` set and no proxy-level auth, anyone who can reach the port spends the operator's OpenRouter credits | **Gap** - same root cause as S2 |
+| S2 | **Subject is caller-asserted.** Any client that can reach the proxy can send `X-Statewave-Subject: user:99` and read/write that subject's memory. | Done - `PROXY_JWT_SECRET` derives the subject from a verified `X-Statewave-Token`; header accepted only under `STATEWAVE_TRUST_CLIENT_SUBJECT` |
+| S3 | With `OPENROUTER_API_KEY` set and no proxy-level auth, anyone who can reach the port spends the operator's OpenRouter credits | Done for `/v1/chat/completions` - a valid token is required once `PROXY_JWT_SECRET` is set. F12/F13 paths and the pass-through routes are still open |
 | S4 | Statewave API key never reaches OpenRouter and vice versa (separate header builders) | Done |
 | S5 | Secrets never logged - log lines carry subject ids only | Done |
 
-S2/S3 fix, decided: proxy trusts a bearer token it can verify, and derives the
-subject from it. Header-supplied subject is accepted only when the proxy is
-started in an explicit trusted-client mode. One env var, one check - not an
-auth framework.
+S2/S3 fix, shipped M2: `PROXY_JWT_SECRET` set means every chat call carries an
+HS256 JWT in `X-Statewave-Token` and the subject is its `sub` claim. Without the
+secret, a caller-supplied subject is honoured only under
+`STATEWAVE_TRUST_CLIENT_SUBJECT`; otherwise the request is a `400`. Two env vars,
+one check in `_resolve_subject` - not an auth framework.
 
 ## Operations
 
@@ -82,7 +83,7 @@ single-file proxy, not a platform.
 | --- | --- | --- |
 | ~~Wed Aug 26 to Fri Aug 28~~ **done 2026-08-27** | **M0 - exist in git** | Initial commit of the current tree, tag `v0.1.0`, CHANGELOG. O8 minus PyPI. |
 | ~~Mon Aug 31 to Fri Sep 4~~ **done 2026-08-27** | **M1 - operable** | O2 `/health`, O3 header relay (shared `_relay` builder), O5 CI matrix. Tests: probe hits no upstream; rate-limit header survives a round trip. Stream path still drops upstream headers - folded into R5's rework. |
-| **Mon Sep 7 to Fri Sep 11** | **M2 - trustworthy** | S2 + S3: verified bearer → derived subject, `STATEWAVE_TRUST_CLIENT_SUBJECT` opt-out for single-tenant deploys. Tests: forged subject rejected; trusted mode still honours the header. **Blocks any public deployment - do not ship a hosted instance before this.** |
+| ~~Mon Sep 7 to Fri Sep 11~~ **done 2026-08-27** | **M2 - trustworthy** | S2 + S3: `PROXY_JWT_SECRET` verifies an `X-Statewave-Token` JWT and derives the subject from `sub`; `STATEWAVE_TRUST_CLIENT_SUBJECT` opt-out for single-tenant deploys. Tests: forged subject loses to the token; missing/bad token is 401; subject with no trust mode is 400; trusted gateway still overrides. |
 | **Mon Sep 14 to Fri Sep 18** | **M3 - surface complete** | F12, F13 (`/v1/completions`, `/v1/responses` memory-aware - extract the subject/context/episode logic the three now share), F14 empty-reply symmetry, O6 version warning. |
 | **Mon Sep 21 to Fri Sep 25** | **M4 - v1.0.0** | R5 incremental SSE parse, O7 Docker image, PyPI publish, README rewrite against the final surface. Tag `v1.0.0`, drop Alpha classifier. |
 
