@@ -50,6 +50,20 @@ TASK_MAX = 4000
 client = httpx.AsyncClient(timeout=TIMEOUT)
 _background: set[asyncio.Task] = set()
 
+# Headers we must not copy from the upstream response: httpx has already
+# decoded the body, and Starlette recomputes length/framing itself.
+_DROP_RESPONSE_HEADERS = {"content-length", "content-encoding", "transfer-encoding", "connection"}
+
+
+def _relay(upstream: httpx.Response) -> Response:
+    """Rebuild an upstream response, keeping its status and headers.
+
+    Without this both handlers dropped everything but content-type, so every
+    ``x-ratelimit-*`` value and the OpenRouter request id vanished at the proxy.
+    """
+    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _DROP_RESPONSE_HEADERS}
+    return Response(upstream.content, status_code=upstream.status_code, headers=headers)
+
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
@@ -229,11 +243,7 @@ async def chat_completions(request: Request):
         if subject and upstream.status_code < 400:
             reply = _json_reply(upstream.json())
             _spawn(_write_turn(subject, session_id, user_text, reply, model, sw_headers))
-        return Response(
-            upstream.content,
-            status_code=upstream.status_code,
-            media_type=upstream.headers.get("content-type"),
-        )
+        return _relay(upstream)
 
     async def relay():
         # ponytail: buffers the full SSE body to rebuild the reply; parse
@@ -251,6 +261,12 @@ async def chat_completions(request: Request):
     return StreamingResponse(relay(), media_type="text/event-stream")
 
 
+@app.get("/health")
+async def health():
+    """Liveness probe. Never touches OpenRouter, so k8s/ALB checks stay free."""
+    return {"status": "ok"}
+
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def passthrough(path: str, request: Request):
     """Everything else (models, credits, generation) goes straight to OpenRouter."""
@@ -261,8 +277,4 @@ async def passthrough(path: str, request: Request):
         headers=_upstream_headers(request),
         params=request.query_params,
     )
-    return Response(
-        upstream.content,
-        status_code=upstream.status_code,
-        media_type=upstream.headers.get("content-type"),
-    )
+    return _relay(upstream)

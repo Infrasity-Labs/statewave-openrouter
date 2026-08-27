@@ -39,9 +39,12 @@ def calls(monkeypatch):
                 return httpx.Response(
                     200, content=sse(), headers={"content-type": "text/event-stream"}
                 )
+            rl = {"x-ratelimit-remaining": "42", "x-request-id": "or-req-1"}
             if path.endswith("/models"):
-                return httpx.Response(200, json={"data": [{"id": "openai/gpt-4o"}]})
-            return httpx.Response(200, json={"choices": [{"message": {"content": "dark roast"}}]})
+                return httpx.Response(200, json={"data": [{"id": "openai/gpt-4o"}]}, headers=rl)
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": "dark roast"}}]}, headers=rl
+            )
         if path == "/v1/context":
             return httpx.Response(200, json={"assembled_context": CONTEXT})
         if path == "/v1/episodes":
@@ -197,3 +200,22 @@ async def test_other_routes_proxy_to_openrouter(calls, proxy):
     response = await proxy.get("/v1/models")
     assert response.status_code == 200
     assert sent_to(calls, "/api/v1/models")
+
+
+async def test_health_probe_hits_no_upstream(calls, proxy):
+    response = await proxy.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert calls == []
+
+
+async def test_upstream_rate_limit_headers_survive_the_round_trip(calls, proxy):
+    # Non-stream chat and plain pass-through both went through _relay.
+    chat = await proxy.post(
+        "/v1/chat/completions",
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    models = await proxy.get("/v1/models")
+    for response in (chat, models):
+        assert response.headers["x-ratelimit-remaining"] == "42"
+        assert response.headers["x-request-id"] == "or-req-1"

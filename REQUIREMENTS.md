@@ -63,10 +63,10 @@ auth framework.
 | ID | Requirement | Status |
 | --- | --- | --- |
 | O1 | Config entirely via env vars, documented in `.env.example` and README | Done |
-| O2 | `GET /health` that does not hit OpenRouter | **Gap** - currently swallowed by F8 pass-through, so every k8s/ALB probe is a billed upstream call |
-| O3 | Upstream response headers relayed (`x-ratelimit-*`, OpenRouter request id) | **Gap** - only `content-type` survives, in both the completions and pass-through handlers |
+| O2 | `GET /health` that does not hit OpenRouter | Done |
+| O3 | Upstream response headers relayed (`x-ratelimit-*`, OpenRouter request id) | Done - shared `_relay` builder; stream path still drops them |
 | O4 | CI: ruff + pytest on 3.11 | Done |
-| O5 | CI matrix covers 3.12 and 3.13 - both claimed in `pyproject.toml` classifiers, neither tested | **Gap** |
+| O5 | CI matrix covers 3.12 and 3.13 - both claimed in `pyproject.toml` classifiers, neither tested | Done |
 | O6 | Startup warns when the Statewave server is older than 1.0.0 (README states the floor; nothing enforces it) | **Gap** |
 | O7 | Dockerfile + published image | **Gap** |
 | O8 | Published to PyPI, tagged, CHANGELOG | **Gap** |
@@ -80,8 +80,8 @@ single-file proxy, not a platform.
 
 | Week | Milestone | Ships |
 | --- | --- | --- |
-| **Wed Aug 26 to Fri Aug 28** | **M0 - exist in git** | Initial commit of the current tree, tag `v0.1.0`, CHANGELOG. O8 minus PyPI. |
-| **Mon Aug 31 to Fri Sep 4** | **M1 - operable** | O2 `/health`, O3 header relay (fix once, in a shared response builder - both handlers drop headers the same way), O5 CI matrix. Tests: probe hits no upstream; rate-limit header survives a round trip. |
+| ~~Wed Aug 26 to Fri Aug 28~~ **done 2026-08-27** | **M0 - exist in git** | Initial commit of the current tree, tag `v0.1.0`, CHANGELOG. O8 minus PyPI. |
+| ~~Mon Aug 31 to Fri Sep 4~~ **done 2026-08-27** | **M1 - operable** | O2 `/health`, O3 header relay (shared `_relay` builder), O5 CI matrix. Tests: probe hits no upstream; rate-limit header survives a round trip. Stream path still drops upstream headers - folded into R5's rework. |
 | **Mon Sep 7 to Fri Sep 11** | **M2 - trustworthy** | S2 + S3: verified bearer → derived subject, `STATEWAVE_TRUST_CLIENT_SUBJECT` opt-out for single-tenant deploys. Tests: forged subject rejected; trusted mode still honours the header. **Blocks any public deployment - do not ship a hosted instance before this.** |
 | **Mon Sep 14 to Fri Sep 18** | **M3 - surface complete** | F12, F13 (`/v1/completions`, `/v1/responses` memory-aware - extract the subject/context/episode logic the three now share), F14 empty-reply symmetry, O6 version warning. |
 | **Mon Sep 21 to Fri Sep 25** | **M4 - v1.0.0** | R5 incremental SSE parse, O7 Docker image, PyPI publish, README rewrite against the final surface. Tag `v1.0.0`, drop Alpha classifier. |

@@ -5,6 +5,15 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+- `GET /health` liveness probe that never contacts OpenRouter (O2).
+- CI now runs on Python 3.11, 3.12 and 3.13 (O5).
+
+### Changed
+- Non-stream and pass-through responses relay all upstream headers
+  (`x-ratelimit-*`, OpenRouter request id, …) via a shared `_relay` builder,
+  instead of keeping only `content-type` (O3). The streaming path is unchanged.
+
 ## [0.1.0] - 2026-08-27
 
 Initial release. Single-file OpenAI-compatible proxy that fronts OpenRouter with
