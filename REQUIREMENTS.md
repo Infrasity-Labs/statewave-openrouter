@@ -4,9 +4,9 @@ Scope: one file (`statewave_openrouter.py`, ~450 lines) that fronts OpenRouter
 with Statewave memory. Anything that would be a second service belongs in
 `smaramwbc/statewave`, not here.
 
-Status as of 2026-08-27: M0-M3 done (in git as `Infrasity-Labs/statewave-openrouter`,
-tag `v0.1.0`; operable; auth-gated; all three completion surfaces memory-aware).
-Next up M4 (v1.0.0). Version 0.1.0, Alpha.
+Status as of 2026-09-08: M0-M4 done (in git as `Infrasity-Labs/statewave-openrouter`;
+operable; auth-gated; all three completion surfaces memory-aware; packaged).
+Version 1.0.0, Production/Stable - ships when `v1.0.0` is tagged.
 
 Legend: **Done** = shipped and covered by a test in `test_proxy.py`.
 **Gap** = not built. **Won't** = deliberately out of scope.
@@ -41,7 +41,7 @@ Legend: **Done** = shipped and covered by a test in `test_proxy.py`.
 | R2 | 401 from Statewave logged as an error naming the two likely causes, not as a transient warning | Done |
 | R3 | Shutdown drains in-flight episode writes before closing the httpx client - the turn exists nowhere else | Done |
 | R4 | Upstream timeout 120s default, 10s connect | Done |
-| R5 | Streaming buffers the whole SSE body to rebuild the reply - memory is O(reply size) per in-flight stream | **Gap** - marked `ponytail:` in source; parse incrementally when replies get large |
+| R5 | Streaming rebuilds the reply as it flows - one partial line plus the reply text held, never a second copy of the body | Done - the stream is opened before the response too, which closed O3's last gap |
 | R6 | No retry/backoff against Statewave | Won't - a failed turn is one lost episode, not lost data |
 
 ## Security
@@ -66,12 +66,12 @@ one check in `_resolve_subject` - not an auth framework.
 | --- | --- | --- |
 | O1 | Config entirely via env vars, documented in `.env.example` and README | Done |
 | O2 | `GET /health` that does not hit OpenRouter | Done |
-| O3 | Upstream response headers relayed (`x-ratelimit-*`, OpenRouter request id) | Done - shared `_relay` builder; stream path still drops them |
+| O3 | Upstream response headers relayed (`x-ratelimit-*`, OpenRouter request id) | Done - shared `_relay_headers` builder, on every path including streams |
 | O4 | CI: ruff + pytest on 3.11 | Done |
 | O5 | CI matrix covers 3.12 and 3.13 - both claimed in `pyproject.toml` classifiers, neither tested | Done |
 | O6 | Startup warns when the Statewave server is older than 1.0.0 (README states the floor; nothing enforces it) | Done - `_warn_if_statewave_outdated` pings `/healthz` on boot, reads `version`; missing endpoint/field is silently fine |
-| O7 | Dockerfile + published image | **Gap** |
-| O8 | Published to PyPI, tagged, CHANGELOG | **Gap** |
+| O7 | Dockerfile + published image | Done - `ghcr.io/infrasity-labs/statewave-openrouter`, pushed by the `Release` workflow |
+| O8 | Published to PyPI, tagged, CHANGELOG | Done - `Release` workflow publishes on a `v*` tag (PyPI trusted publishing, no token secret) |
 
 ---
 
@@ -86,9 +86,10 @@ single-file proxy, not a platform.
 | ~~Mon Aug 31 to Fri Sep 4~~ **done 2026-08-27** | **M1 - operable** | O2 `/health`, O3 header relay (shared `_relay` builder), O5 CI matrix. Tests: probe hits no upstream; rate-limit header survives a round trip. Stream path still drops upstream headers - folded into R5's rework. |
 | ~~Mon Sep 7 to Fri Sep 11~~ **done 2026-08-27** | **M2 - trustworthy** | S2 + S3: `PROXY_JWT_SECRET` verifies an `X-Statewave-Token` JWT and derives the subject from `sub`; `STATEWAVE_TRUST_CLIENT_SUBJECT` opt-out for single-tenant deploys. Tests: forged subject loses to the token; missing/bad token is 401; subject with no trust mode is 400; trusted gateway still overrides. |
 | ~~Mon Sep 14 to Fri Sep 18~~ **done 2026-08-27** | **M3 - surface complete** | F12, F13 (`/v1/completions`, `/v1/responses` memory-aware via a shared `_memory_proxy` + per-shape adapters), F14 empty-reply symmetry, O6 version warning. |
-| **Mon Sep 21 to Fri Sep 25** | **M4 - v1.0.0** | R5 incremental SSE parse, O7 Docker image, PyPI publish, README rewrite against the final surface. Tag `v1.0.0`, drop Alpha classifier. |
+| ~~Mon Sep 21 to Fri Sep 25~~ **done 2026-09-08** | **M4 - v1.0.0** | R5 incremental SSE parse (and with it the stream half of O3), O7 Dockerfile + ghcr image, O8 tag-driven PyPI publish, README against the final surface. Version 1.0.0, Alpha classifier dropped. |
 
-Critical path: M0 → M2. M1 and M3 can swap if a deployment target appears first.
+Critical path: M0 → M4, done. v1.0.0 ships when the `v1.0.0` tag is pushed;
+the `Release` workflow publishes the wheel and the image.
 
 Not scheduled: metrics/OpenTelemetry, multi-provider upstreams, an admin API.
 Each turns this into a service that needs owning. Add when something concrete

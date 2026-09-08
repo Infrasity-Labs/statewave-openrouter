@@ -3,7 +3,10 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
-## [Unreleased]
+## [1.0.0] - 2026-09-08
+
+First stable release. The surface is complete; what is documented below is
+what follow-up releases have to keep working.
 
 ### Added
 - `GET /health` liveness probe that never contacts OpenRouter (O2).
@@ -19,11 +22,19 @@ All notable changes to this project are documented here. Format loosely follows
   the turn is written back (F13).
 - On startup the proxy pings Statewave `/healthz` and logs a warning if the
   server is older than 1.0.0 (O6). Best-effort, never blocks boot.
+- `Dockerfile` and a `ghcr.io/infrasity-labs/statewave-openrouter` image, built
+  and pushed by a tag-driven `Release` workflow that also publishes to PyPI
+  (O7, O8). The container listens on `$PORT` (8080 by default), runs as `nobody`.
 
 ### Changed
 - Non-stream and pass-through responses relay all upstream headers
   (`x-ratelimit-*`, OpenRouter request id, and the rest) via a shared `_relay`
-  builder, instead of keeping only `content-type` (O3). Streaming path unchanged.
+  builder, instead of keeping only `content-type` (O3).
+- Streaming rebuilds the reply one SSE line at a time as the bytes arrive,
+  instead of buffering the whole body first: an in-flight stream now holds the
+  reply text and one partial line, not a second copy of the response (R5).
+  Opening the stream before the response is built is also what lets the
+  streaming path relay upstream status and headers - the last gap in O3.
 - The three memory-aware endpoints now share one handler (`_memory_proxy`) with
   per-endpoint shape adapters.
 - An empty assistant reply no longer writes an episode on the non-stream path
@@ -52,5 +63,5 @@ Statewave memory.
 - Statewave failures never fail the completion; shutdown drains in-flight
   episode writes before closing the HTTP client.
 
-[Unreleased]: https://github.com/smaramwbc/statewave-openrouter/compare/v0.1.0...HEAD
+[1.0.0]: https://github.com/Infrasity-Labs/statewave-openrouter/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/smaramwbc/statewave-openrouter/releases/tag/v0.1.0
