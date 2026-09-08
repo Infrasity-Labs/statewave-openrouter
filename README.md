@@ -190,7 +190,7 @@ Three endpoints get memory. They differ only in where the bundle can go:
 | `POST /v1/completions` | ahead of `prompt` | `choices[].text` |
 | `POST /v1/responses` | ahead of `instructions`; `input` is untouched | `output[].content[].text` |
 
-Every other path (`/v1/models`, `/v1/credits`, …) is proxied straight to
+Every other path (`/v1/models`, `/v1/credits` and the rest) is proxied straight to
 OpenRouter, so the proxy is a drop-in base URL replacement.
 
 ---
