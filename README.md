@@ -226,7 +226,7 @@ the proxy decides:
 | --- | --- | --- |
 | *nothing* | A request carrying a subject gets `400 statewave_untrusted_subject`. Subject-less pass-through still works. | Never intentionally — this is the safe default, not a mode. |
 | `STATEWAVE_TRUST_CLIENT_SUBJECT=1` | `X-Statewave-Subject` is trusted as sent. | Laptop, private network, or behind a gateway that already authenticates callers. |
-| `PROXY_JWT_SECRET=<hs256 secret>` | Every completion call must send `X-Statewave-Token: <jwt>` signed with that secret. The subject is the token's `sub` claim; `X-Statewave-Subject` is ignored. Missing or bad token → `401`. | Anything reachable by clients you do not control. |
+| `PROXY_JWT_SECRET=<hs256 secret>` | Every route but `/health` must send `X-Statewave-Token: <jwt>` signed with that secret. The subject is the token's `sub` claim; `X-Statewave-Subject` is ignored. Missing or bad token → `401`. | Anything reachable by clients you do not control. |
 
 Setting **both** keeps token verification on while letting a trusted gateway
 choose the subject per request — it authenticates itself with a token, then

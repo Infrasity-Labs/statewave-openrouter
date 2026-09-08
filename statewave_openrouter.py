@@ -112,6 +112,32 @@ async def _lifespan(_: FastAPI):
 app = FastAPI(title="statewave-openrouter", lifespan=_lifespan)
 
 
+@app.middleware("http")
+async def _require_token(request: Request, call_next):
+    """One choke point, so no route can forget the token - pass-through included.
+
+    Gating inside the three completion handlers left `passthrough` asking for
+    nothing: dropping `/v1` from the path routed the same request there, and it
+    reached OpenRouter on `OPENROUTER_API_KEY`. Off entirely when no secret is
+    configured; `_resolve_subject` still derives the subject from the token it
+    verifies again (S3).
+    """
+    if not JWT_SECRET or request.url.path == "/health":
+        return await call_next(request)
+    token = request.headers.get("x-statewave-token", "").strip()
+    if token[:7].lower() == "bearer ":
+        token = token[7:].strip()
+    if not token:
+        return _error(
+            401, "statewave requires a token in X-Statewave-Token", "statewave_auth_required"
+        )
+    try:
+        jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    except jwt.InvalidTokenError as exc:
+        return _error(401, f"invalid statewave token: {exc}", "statewave_bad_token")
+    return await call_next(request)
+
+
 def _spawn(coro) -> None:
     """Run a best-effort side task without blocking the response."""
     task = asyncio.create_task(coro)

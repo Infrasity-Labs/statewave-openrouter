@@ -50,7 +50,7 @@ Legend: **Done** = shipped and covered by a test in `test_proxy.py`.
 | --- | --- | --- |
 | S1 | Caller's `Authorization` forwarded verbatim; `OPENROUTER_API_KEY` used only as fallback | Done |
 | S2 | **Subject is caller-asserted.** Any client that can reach the proxy can send `X-Statewave-Subject: user:99` and read/write that subject's memory. | Done - `PROXY_JWT_SECRET` derives the subject from a verified `X-Statewave-Token`; header accepted only under `STATEWAVE_TRUST_CLIENT_SUBJECT` |
-| S3 | With `OPENROUTER_API_KEY` set and no proxy-level auth, anyone who can reach the port spends the operator's OpenRouter credits | Done for all three completion endpoints - `PROXY_JWT_SECRET` set means `_memory_proxy` rejects a tokenless call with 401. The `GET`-heavy pass-through routes (models, credits) stay open by design |
+| S3 | With `OPENROUTER_API_KEY` set and no proxy-level auth, anyone who can reach the port spends the operator's OpenRouter credits | Done - `PROXY_JWT_SECRET` set means an HTTP middleware rejects a tokenless call on every route but `/health`. Gating the three handlers alone was not enough: pass-through is not read-only, and `POST /chat/completions` without the `/v1` reached OpenRouter through it on the operator's key |
 | S4 | Statewave API key never reaches OpenRouter and vice versa (separate header builders) | Done |
 | S5 | Secrets never logged - log lines carry subject ids only | Done |
 
@@ -58,7 +58,12 @@ S2/S3 fix, shipped M2: `PROXY_JWT_SECRET` set means every chat call carries an
 HS256 JWT in `X-Statewave-Token` and the subject is its `sub` claim. Without the
 secret, a caller-supplied subject is honoured only under
 `STATEWAVE_TRUST_CLIENT_SUBJECT`; otherwise the request is a `400`. Two env vars,
-one check in `_resolve_subject` - not an auth framework.
+one check in a middleware and one in `_resolve_subject` - not an auth framework.
+
+The middleware is what makes S3 true. Leaving pass-through open was a deliberate
+call, but it rested on those routes being cheap reads like models and credits;
+they are not, since the catch-all also carries `POST /chat/completions` for any
+caller who drops the `/v1` prefix.
 
 ## Operations
 
