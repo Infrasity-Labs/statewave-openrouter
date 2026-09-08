@@ -109,8 +109,10 @@ docker run --rm -p 8080:8080 --env-file .env \
   ghcr.io/smaramwbc/statewave-openrouter:1.0.0
 ```
 
-Note that `localhost` inside a container is the container. If Statewave runs on
-your host, use `STATEWAVE_URL=http://host.docker.internal:8000`.
+Note that `localhost` inside a container is the container. If Statewave runs
+on your host, use `STATEWAVE_URL=http://host.docker.internal:8000`. On Docker
+for Linux that name does not resolve on its own, so add
+`--add-host=host.docker.internal:host-gateway` to the `docker run`.
 </details>
 
 ### 4. Verify
@@ -120,7 +122,9 @@ curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
-Then a real call - this one goes to OpenRouter *and* through Statewave:
+Then a real call - this one goes to OpenRouter *and* through Statewave.
+
+If you chose `STATEWAVE_TRUST_CLIENT_SUBJECT=1`:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -128,6 +132,10 @@ curl http://localhost:8080/v1/chat/completions \
   -H "X-Statewave-Subject: user:42" \
   -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"What coffee do I like?"}]}'
 ```
+
+If you chose `PROXY_JWT_SECRET`, the subject comes from a token instead, so use
+the call in [Authenticating the subject](#authenticating-the-subject). Sending
+`X-Statewave-Subject` on its own gets you `401 statewave_auth_required`.
 
 You should see a normal OpenAI-shaped response. Watch the proxy's log: a
 warning there means Statewave was skipped for that turn and the completion went
@@ -233,6 +241,9 @@ choose the subject per request - it authenticates itself with a token, then
 names whichever subject it is acting for.
 
 ```bash
+# The proxy reads the secret from .env; this shell has to know it too.
+export PROXY_JWT_SECRET='the same secret you put in .env'
+
 TOKEN=$(python -c "import jwt; print(jwt.encode({'sub':'user:42'}, '$PROXY_JWT_SECRET', algorithm='HS256'))")
 
 curl http://localhost:8080/v1/chat/completions \
@@ -327,7 +338,7 @@ closes, since that is the only place a turn exists before Statewave has it.
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 22 tests, both upstreams faked with httpx MockTransport
+pytest          # both upstreams faked with httpx MockTransport
 ruff check .
 ```
 
