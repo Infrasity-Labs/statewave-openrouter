@@ -211,7 +211,14 @@ def _legacy_prompt(body: dict) -> str:
 
 
 def _legacy_inject(body: dict, context: str) -> None:
-    body["prompt"] = f"{context}\n\n{_legacy_prompt(body)}"
+    prompt = body.get("prompt")
+    if isinstance(prompt, list):
+        # A list prompt is a batch of independent completions. Joining it into
+        # one string returns one choice where the caller asked for len(prompt),
+        # and glues unrelated prompts together - so prefix each element instead.
+        body["prompt"] = [f"{context}\n\n{p}" if isinstance(p, str) else p for p in prompt]
+    else:
+        body["prompt"] = f"{context}\n\n{_legacy_prompt(body)}"
 
 
 def _legacy_json_reply(payload: dict) -> str:

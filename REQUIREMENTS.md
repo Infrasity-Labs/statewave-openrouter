@@ -28,7 +28,7 @@ Legend: **Done** = shipped and covered by a test in `test_proxy.py`.
 | F9 | `caller_id` + `caller_type` sent on every retrieval; empty env value must not become an empty caller_id | Done |
 | F10 | `X-Tenant-ID` forwarded, or pinned via `STATEWAVE_TENANT_ID` | Done |
 | F11 | Optional async compile after each turn (`STATEWAVE_COMPILE_AFTER_TURN`) | Done |
-| F12 | `POST /v1/completions` (legacy) is memory-aware | Done - context prefixed to `prompt`; shares `_memory_proxy` |
+| F12 | `POST /v1/completions` (legacy) is memory-aware | Done - context prefixed to `prompt`, and to every element of a list prompt; shares `_memory_proxy` |
 | F13 | `POST /v1/responses` is memory-aware | Done - context merged into `instructions`; typed-event SSE reply parser |
 | F14 | Non-stream path writes an episode even when the reply text is empty; stream path skips it. Pick one. | Done - picked skip; both paths guard `if reply` in `_memory_proxy` |
 | F15 | Multi-turn history summarisation, local caching, prompt templating | Won't - Statewave's job |

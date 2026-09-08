@@ -331,6 +331,19 @@ async def test_legacy_completions_gets_context_and_writes_a_turn(calls, proxy, t
     ]
 
 
+async def test_legacy_batch_prompt_keeps_every_element(calls, proxy, trusted):
+    # A list prompt is N independent completions. Joining it into one string
+    # returned one choice where the caller asked for two.
+    await proxy.post(
+        "/v1/completions",
+        headers={"X-Statewave-Subject": "user:42"},
+        json={"model": "x", "prompt": ["coffee?", "tea?"]},
+    )
+    await drain()
+    forwarded = body_of(sent_to(calls, "/api/v1/completions")[0])
+    assert forwarded["prompt"] == [f"{CONTEXT}\n\ncoffee?", f"{CONTEXT}\n\ntea?"]
+
+
 async def test_responses_api_gets_context_and_writes_a_turn(calls, proxy, trusted):
     await proxy.post(
         "/v1/responses",
