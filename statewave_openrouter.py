@@ -336,8 +336,12 @@ def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | No
     subject is honoured only when `TRUST_CLIENT_SUBJECT` is on. Returns
     ``(subject, session_id, error)`` - `error` is a response to return as-is.
     """
-    hdr_subject = request.headers.get("x-statewave-subject") or body.pop("statewave_subject", None)
-    session_id = request.headers.get("x-statewave-session") or body.pop("statewave_session", None)
+    # Pop first, then prefer the header: `header or body.pop(...)` skips the pop
+    # whenever a header is set, leaving our field in the body sent upstream (F4).
+    body_subject = body.pop("statewave_subject", None)
+    body_session = body.pop("statewave_session", None)
+    hdr_subject = request.headers.get("x-statewave-subject") or body_subject
+    session_id = request.headers.get("x-statewave-session") or body_session
     for field, value in (("subject", hdr_subject), ("session", session_id)):
         if value and not ID_RE.fullmatch(value):
             return None, None, _error(
@@ -419,7 +423,7 @@ async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json
         parts: list[str] = []
         pending = b""
         try:
-            async for chunk in upstream.aiter_raw():
+            async for chunk in upstream.aiter_bytes():
                 yield chunk
                 if not subject:
                     continue
