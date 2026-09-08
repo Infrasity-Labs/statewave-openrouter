@@ -1,6 +1,13 @@
 name: Release
 
 # Tag-driven: `git tag v1.0.0 && git push --tags` publishes both artifacts.
+#
+# Two things must exist before the first tag, or the jobs below fail:
+#   1. a PyPI trusted publisher for project `statewave-openrouter`, pointing at
+#      this repo's owner + `release.yml` (no API token to store or rotate);
+#   2. nothing for ghcr - but the package is private on first push, so make it
+#      public afterwards or `docker pull` fails outside the org.
+# Both are per-repo: re-do them if the project moves to another owner.
 on:
   push:
     tags: ["v*"]

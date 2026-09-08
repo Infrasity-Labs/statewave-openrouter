@@ -40,7 +40,7 @@ uvicorn statewave_openrouter:app --port 8080
 Or as a container - same env vars, listens on `$PORT` (8080 by default):
 
 ```bash
-docker run --rm -p 8080:8080 --env-file .env ghcr.io/infrasity-labs/statewave-openrouter:1.0.0
+docker run --rm -p 8080:8080 --env-file .env ghcr.io/smaramwbc/statewave-openrouter:1.0.0
 ```
 
 The examples below name a subject, so the proxy needs to be told it may trust
