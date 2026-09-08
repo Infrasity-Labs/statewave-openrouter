@@ -301,7 +301,7 @@ with `require_caller_identity`, a retrieval without those fields is a `401`; on
 one in `policy_mode: enforce`, an absent `caller_type` is the least-privileged
 caller and quietly thins the bundle. The proxy always sends both.
 
-On startup it pings `GET {STATEWAVE_URL}/healthz` and logs a warning if the
+On startup it pings `GET {STATEWAVE_URL}/v1/version` and logs a warning if the
 reported `version` is below 1.0.0. Best-effort: a server that does not expose
 the endpoint or the field just boots without the warning.
 

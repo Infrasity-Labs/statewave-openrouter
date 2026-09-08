@@ -483,14 +483,20 @@ def test_sse_reply_parsers_match_their_endpoint_shapes():
 
 
 async def test_startup_warns_when_statewave_is_pre_1_0(monkeypatch, caplog):
-    monkeypatch.setattr(
-        sw, "client",
-        httpx.AsyncClient(transport=httpx.MockTransport(
-            lambda r: httpx.Response(200, json={"version": "0.9.3"})
-        )),
-    )
+    # The path matters: a live server answers /healthz with {"status": "ok"} and
+    # no version at all, so probing it could never warn about anything.
+    asked = []
+
+    def only_version(request):
+        asked.append(request.url.path)
+        if request.url.path == "/v1/version":
+            return httpx.Response(200, json={"version": "0.9.3", "api_contract": "v1"})
+        return httpx.Response(200, json={"status": "ok"})
+
+    monkeypatch.setattr(sw, "client", httpx.AsyncClient(transport=httpx.MockTransport(only_version)))
     with caplog.at_level("WARNING"):
         await sw._warn_if_statewave_outdated()
+    assert asked == ["/v1/version"]
     assert "0.9.3" in caplog.text and ">= 1.0.0" in caplog.text
 
 

@@ -74,7 +74,7 @@ caller who drops the `/v1` prefix.
 | O3 | Upstream response headers relayed (`x-ratelimit-*`, OpenRouter request id) | Done - shared `_relay_headers` builder, on every path including streams |
 | O4 | CI: ruff + pytest on 3.11 | Done |
 | O5 | CI matrix covers 3.12 and 3.13 - both claimed in `pyproject.toml` classifiers, neither tested | Done |
-| O6 | Startup warns when the Statewave server is older than 1.0.0 (README states the floor; nothing enforces it) | Done - `_warn_if_statewave_outdated` pings `/healthz` on boot, reads `version`; missing endpoint/field is silently fine |
+| O6 | Startup warns when the Statewave server is older than 1.0.0 (README states the floor; nothing enforces it) | Done - `_warn_if_statewave_outdated` reads `/v1/version` on boot; missing endpoint/field is silently fine. It read `/healthz`, which reports status and no version, so the warning could never fire |
 | O7 | Dockerfile + published image | Done - `ghcr.io/smaramwbc/statewave-openrouter`, pushed by the `Release` workflow |
 | O8 | Published to PyPI, tagged, CHANGELOG | Done - `Release` workflow publishes on a `v*` tag (PyPI trusted publishing, no token secret) |
 

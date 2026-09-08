@@ -20,7 +20,7 @@ what follow-up releases have to keep working.
   `prompt`, the turn is written back (F12).
 - `POST /v1/responses` is memory-aware: context is merged into `instructions`,
   the turn is written back (F13).
-- On startup the proxy pings Statewave `/healthz` and logs a warning if the
+- On startup the proxy pings Statewave `/v1/version` and logs a warning if the
   server is older than 1.0.0 (O6). Best-effort, never blocks boot.
 - `Dockerfile` and a `ghcr.io/smaramwbc/statewave-openrouter` image, built
   and pushed by a tag-driven `Release` workflow that also publishes to PyPI
