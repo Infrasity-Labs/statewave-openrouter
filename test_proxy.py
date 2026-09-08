@@ -7,6 +7,7 @@ MockTransport swapped into the proxy's shared client.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 
 import httpx
@@ -39,6 +40,13 @@ def calls(monkeypatch):
         for i in range(0, len(body), 7):
             yield body[i : i + 7]
 
+    async def gzipped_sse():
+        # httpx advertises Accept-Encoding, so an upstream may compress the
+        # stream; the proxy has to hand the client something it can read.
+        yield gzip.compress(
+            b'data: {"choices":[{"delta":{"content":"dark roast"}}]}\n\ndata: [DONE]\n\n'
+        )
+
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         path = request.url.path
@@ -46,6 +54,16 @@ def calls(monkeypatch):
         rl = {"x-ratelimit-remaining": "42", "x-request-id": "or-req-1"}
         if "openrouter" in request.url.host:
             if raw and json.loads(raw).get("stream"):
+                if json.loads(raw).get("model") == "gzipped":
+                    return httpx.Response(
+                        200,
+                        content=gzipped_sse(),
+                        headers={
+                            "content-type": "text/event-stream",
+                            "content-encoding": "gzip",
+                            **rl,
+                        },
+                    )
                 return httpx.Response(
                     200, content=sse(), headers={"content-type": "text/event-stream", **rl}
                 )
@@ -195,6 +213,46 @@ async def test_stream_passes_through_verbatim_and_records_reply(calls, proxy, tr
     assert response.headers["x-ratelimit-remaining"] == "42"
     payload = body_of(sent_to(calls, "/v1/episodes")[0])["payload"]
     assert payload["messages"][1] == {"role": "assistant", "content": "dark roast"}
+
+
+async def test_compressed_stream_reaches_the_client_readable(calls, proxy, trusted):
+    # The proxy strips content-encoding from the relayed headers, so what it
+    # yields has to be decoded - raw gzip bytes would be undeclared and
+    # unparseable, and the episode would be lost with them.
+    chunks = []
+    async with proxy.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "user:42"},
+        json={"model": "gzipped", "stream": True, "messages": [{"role": "user", "content": "?"}]},
+    ) as response:
+        async for chunk in response.aiter_bytes():
+            chunks.append(chunk)
+    await drain()
+
+    assert b"".join(chunks).startswith(b"data: {")
+    assert "content-encoding" not in response.headers
+    payload = body_of(sent_to(calls, "/v1/episodes")[0])["payload"]
+    assert payload["messages"][1] == {"role": "assistant", "content": "dark roast"}
+
+
+async def test_body_fields_are_stripped_even_when_a_header_wins(calls, proxy, trusted):
+    # `header or body.pop(...)` skipped the pop, so our own field rode along to
+    # OpenRouter, which 400s on unrecognised top-level params (F4).
+    await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "user:42", "X-Statewave-Session": "sess_a"},
+        json={
+            "model": "x",
+            "messages": [{"role": "user", "content": "coffee?"}],
+            "statewave_subject": "user:42",
+            "statewave_session": "sess_a",
+        },
+    )
+    await drain()
+    forwarded = body_of(sent_to(calls, "/api/v1/chat/completions")[0])
+    assert "statewave_subject" not in forwarded
+    assert "statewave_session" not in forwarded
 
 
 async def test_statewave_down_still_answers(calls, proxy, monkeypatch, trusted):
