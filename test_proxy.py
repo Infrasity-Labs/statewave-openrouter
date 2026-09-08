@@ -29,23 +29,26 @@ def calls(monkeypatch):
     seen: list[httpx.Request] = []
 
     async def sse():
-        for line in (
-            'data: {"choices":[{"delta":{"content":"dark "}}]}\n\n',
-            'data: {"choices":[{"delta":{"content":"roast"}}]}\n\n',
-            "data: [DONE]\n\n",
-        ):
-            yield line.encode()
+        body = (
+            b'data: {"choices":[{"delta":{"content":"dark "}}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":"roast"}}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        # Seven bytes at a time: chunk boundaries land mid-line, which is exactly
+        # what the incremental parser has to survive (R5).
+        for i in range(0, len(body), 7):
+            yield body[i : i + 7]
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         path = request.url.path
         raw = request.read()
+        rl = {"x-ratelimit-remaining": "42", "x-request-id": "or-req-1"}
         if "openrouter" in request.url.host:
             if raw and json.loads(raw).get("stream"):
                 return httpx.Response(
-                    200, content=sse(), headers={"content-type": "text/event-stream"}
+                    200, content=sse(), headers={"content-type": "text/event-stream", **rl}
                 )
-            rl = {"x-ratelimit-remaining": "42", "x-request-id": "or-req-1"}
             if path.endswith("/models"):
                 return httpx.Response(200, json={"data": [{"id": "openai/gpt-4o"}]}, headers=rl)
             if path.endswith("/responses"):
@@ -187,6 +190,9 @@ async def test_stream_passes_through_verbatim_and_records_reply(calls, proxy, tr
     await drain()
 
     assert b"".join(chunks).endswith(b"data: [DONE]\n\n")
+    # Upstream headers reach the client on the stream path too, now that the
+    # stream is opened before the response is built (O3).
+    assert response.headers["x-ratelimit-remaining"] == "42"
     payload = body_of(sent_to(calls, "/v1/episodes")[0])["payload"]
     assert payload["messages"][1] == {"role": "assistant", "content": "dark roast"}
 
@@ -378,9 +384,13 @@ def test_sse_reply_parsers_match_their_endpoint_shapes():
         'data: {"type":"response.output_text.delta","delta":"rk"}\n\n'
         'data: {"type":"response.completed","response":{}}\n\n'
     )
-    assert sw._chat_sse_reply(chat) == "dark"
-    assert sw._legacy_sse_reply(legacy) == "dark"
-    assert sw._responses_sse_reply(responses) == "dark"
+    def replay(raw: str, pick) -> str:
+        # What _memory_proxy does to the bytes as they arrive: one line, one pick.
+        return "".join(sw._sse_event(line, pick) for line in raw.encode().split(b"\n"))
+
+    assert replay(chat, sw._chat_sse_pick) == "dark"
+    assert replay(legacy, sw._legacy_sse_pick) == "dark"
+    assert replay(responses, sw._responses_sse_pick) == "dark"
 
 
 async def test_startup_warns_when_statewave_is_pre_1_0(monkeypatch, caplog):

@@ -31,10 +31,16 @@ trusted from a header or derived from a signed token; see
 ## Getting started
 
 ```bash
-pip install -e .
+pip install statewave-openrouter
 cp .env.example .env        # set OPENROUTER_API_KEY, STATEWAVE_URL, and a
                             # subject-trust mode (see below)
 uvicorn statewave_openrouter:app --port 8080
+```
+
+Or as a container - same env vars, listens on `$PORT` (8080 by default):
+
+```bash
+docker run --rm -p 8080:8080 --env-file .env ghcr.io/infrasity-labs/statewave-openrouter:1.0.0
 ```
 
 The examples below name a subject, so the proxy needs to be told it may trust
@@ -77,8 +83,10 @@ client ──POST /v1/chat/completions──▶ proxy ──POST /v1/context─�
                                     client ◀──completion (verbatim bytes)
 ```
 
-Streaming works the same way: SSE chunks are relayed byte-for-byte, and the
-episode is written once the stream closes.
+Streaming works the same way: SSE chunks are relayed byte-for-byte, the
+upstream status and headers come with them, and the episode is written once the
+stream closes. The reply is reassembled line by line as it flows, so a long
+stream costs the reply text rather than a second copy of the body.
 
 ## Naming the subject
 

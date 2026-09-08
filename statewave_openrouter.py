@@ -63,14 +63,20 @@ _background: set[asyncio.Task] = set()
 _DROP_RESPONSE_HEADERS = {"content-length", "content-encoding", "transfer-encoding", "connection"}
 
 
-def _relay(upstream: httpx.Response) -> Response:
-    """Rebuild an upstream response, keeping its status and headers.
+def _relay_headers(upstream: httpx.Response) -> dict[str, str]:
+    """Upstream headers worth keeping.
 
-    Without this both handlers dropped everything but content-type, so every
+    Without this every path dropped all but content-type, so every
     ``x-ratelimit-*`` value and the OpenRouter request id vanished at the proxy.
     """
-    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _DROP_RESPONSE_HEADERS}
-    return Response(upstream.content, status_code=upstream.status_code, headers=headers)
+    return {k: v for k, v in upstream.headers.items() if k.lower() not in _DROP_RESPONSE_HEADERS}
+
+
+def _relay(upstream: httpx.Response) -> Response:
+    """Rebuild an upstream response, keeping its status and headers."""
+    return Response(
+        upstream.content, status_code=upstream.status_code, headers=_relay_headers(upstream)
+    )
 
 
 def _error(status: int, message: str, error_type: str) -> JSONResponse:
@@ -138,23 +144,20 @@ def _upstream_headers(request: Request) -> dict[str, str]:
     return headers
 
 
-def _sse_join(raw: str, pick) -> str:
-    """Rebuild a reply from a buffered SSE body. `pick(event) -> str` pulls the
-    text fragment out of one parsed `data:` object; its shape differs per
-    endpoint."""
-    parts = []
-    for line in raw.splitlines():
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if data == "[DONE]":
-            break
-        try:
-            event = json.loads(data)
-        except ValueError:
-            continue
-        parts.append(pick(event) or "")
-    return "".join(parts)
+def _sse_event(line: bytes, pick) -> str:
+    """Text fragment carried by one SSE line, "" for anything else.
+
+    `pick(event) -> str` pulls the fragment out of one parsed `data:` object;
+    its shape differs per endpoint. Comments, blank lines and `[DONE]` all fail
+    to parse as an event, which is the same as carrying no text.
+    """
+    if not line.startswith(b"data:"):
+        return ""
+    try:
+        event = json.loads(line[5:])
+    except ValueError:
+        return ""
+    return pick(event) or ""
 
 
 def _choice_text(event: dict, container: str | None, field: str) -> str:
@@ -194,8 +197,8 @@ def _chat_json_reply(payload: dict) -> str:
     return ""
 
 
-def _chat_sse_reply(raw: str) -> str:
-    return _sse_join(raw, lambda e: _choice_text(e, "delta", "content"))
+def _chat_sse_pick(event: dict) -> str:
+    return _choice_text(event, "delta", "content")
 
 
 def _legacy_prompt(body: dict) -> str:
@@ -218,8 +221,8 @@ def _legacy_json_reply(payload: dict) -> str:
     return ""
 
 
-def _legacy_sse_reply(raw: str) -> str:
-    return _sse_join(raw, lambda e: _choice_text(e, None, "text"))
+def _legacy_sse_pick(event: dict) -> str:
+    return _choice_text(event, None, "text")
 
 
 def _responses_prompt(body: dict) -> str:
@@ -253,10 +256,8 @@ def _responses_json_reply(payload: dict) -> str:
     return "".join(parts)
 
 
-def _responses_sse_reply(raw: str) -> str:
-    return _sse_join(
-        raw, lambda e: e.get("delta") if e.get("type") == "response.output_text.delta" else ""
-    )
+def _responses_sse_pick(event: dict) -> str:
+    return event.get("delta") if event.get("type") == "response.output_text.delta" else ""
 
 
 async def _fetch_context(subject: str, task: str, session_id: str | None, headers: dict) -> str:
@@ -368,7 +369,7 @@ def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | No
     return hdr_subject, session_id, None
 
 
-async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json_reply, sse_reply):
+async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json_reply, sse_pick):
     """Shared body for the three memory-aware endpoints. `path` is the upstream
     route; the four callables adapt this endpoint's request/response shape."""
     body = await request.json()
@@ -398,18 +399,37 @@ async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json
             record(json_reply(upstream.json()))
         return _relay(upstream)
 
-    async def relay():
-        # ponytail: buffers the full SSE body to rebuild the reply; parse
-        # incrementally if replies ever get large enough to matter.
-        buffer = bytearray()
-        async with client.stream("POST", url, json=body, headers=headers) as upstream:
-            async for chunk in upstream.aiter_raw():
-                buffer += chunk
-                yield chunk
-        if subject:
-            record(sse_reply(bytes(buffer).decode("utf-8", "ignore")))
+    # Entered here rather than inside the generator: the upstream status and
+    # headers have to be known before the response object exists, and that is
+    # what kept the stream path from relaying them (O3).
+    stream = client.stream("POST", url, json=body, headers=headers)
+    upstream = await stream.__aenter__()
 
-    return StreamingResponse(relay(), media_type="text/event-stream")
+    async def relay():
+        # One line at a time as it flows. Buffering the whole SSE body to
+        # rebuild the reply made memory O(body) per in-flight stream (R5); only
+        # the reply text and one partial line are held now.
+        parts: list[str] = []
+        pending = b""
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+                if not subject:
+                    continue
+                lines = (pending + chunk).split(b"\n")
+                pending = lines.pop()  # last element is the unterminated tail
+                parts += [_sse_event(line, sse_pick) for line in lines]
+        finally:
+            await stream.__aexit__(None, None, None)
+        parts.append(_sse_event(pending, sse_pick))  # a body with no final newline
+        record("".join(parts))
+
+    return StreamingResponse(
+        relay(),
+        status_code=upstream.status_code,
+        headers=_relay_headers(upstream),
+        media_type="text/event-stream",
+    )
 
 
 @app.post("/v1/chat/completions")
@@ -417,7 +437,7 @@ async def chat_completions(request: Request):
     return await _memory_proxy(
         request, "chat/completions",
         get_prompt=_chat_prompt, inject=_chat_inject,
-        json_reply=_chat_json_reply, sse_reply=_chat_sse_reply,
+        json_reply=_chat_json_reply, sse_pick=_chat_sse_pick,
     )
 
 
@@ -426,7 +446,7 @@ async def completions(request: Request):
     return await _memory_proxy(
         request, "completions",
         get_prompt=_legacy_prompt, inject=_legacy_inject,
-        json_reply=_legacy_json_reply, sse_reply=_legacy_sse_reply,
+        json_reply=_legacy_json_reply, sse_pick=_legacy_sse_pick,
     )
 
 
@@ -435,7 +455,7 @@ async def responses(request: Request):
     return await _memory_proxy(
         request, "responses",
         get_prompt=_responses_prompt, inject=_responses_inject,
-        json_reply=_responses_json_reply, sse_reply=_responses_sse_reply,
+        json_reply=_responses_json_reply, sse_pick=_responses_sse_pick,
     )
 
 
