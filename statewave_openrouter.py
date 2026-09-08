@@ -77,8 +77,24 @@ def _error(status: int, message: str, error_type: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": {"message": message, "type": error_type}})
 
 
+async def _warn_if_statewave_outdated() -> None:
+    """README pins Statewave >= 1.0.0 (caller-identity + tenant-config surface).
+    Best-effort nudge on boot; a missing endpoint or field is silently fine."""
+    try:
+        response = await client.get(f"{STATEWAVE_URL}/healthz", timeout=5.0)
+        version = (response.json() or {}).get("version", "")
+    except Exception:  # noqa: BLE001 - never let a probe stop the proxy booting
+        return
+    digits = re.findall(r"\d+", version)[:3]
+    if digits and tuple(int(d) for d in digits) < (1, 0, 0):
+        log.warning(
+            "statewave server reports version %s; this proxy expects >= 1.0.0", version
+        )
+
+
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
+    await _warn_if_statewave_outdated()
     yield
     # Drain before closing: in-flight episode writes are the only place a
     # turn exists before Statewave has it.
@@ -122,7 +138,40 @@ def _upstream_headers(request: Request) -> dict[str, str]:
     return headers
 
 
-def _last_user_text(body: dict) -> str:
+def _sse_join(raw: str, pick) -> str:
+    """Rebuild a reply from a buffered SSE body. `pick(event) -> str` pulls the
+    text fragment out of one parsed `data:` object; its shape differs per
+    endpoint."""
+    parts = []
+    for line in raw.splitlines():
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            event = json.loads(data)
+        except ValueError:
+            continue
+        parts.append(pick(event) or "")
+    return "".join(parts)
+
+
+def _choice_text(event: dict, container: str | None, field: str) -> str:
+    for choice in event.get("choices") or []:
+        src = (choice.get(container) or {}) if container else choice
+        if src.get(field):
+            return src[field]
+    return ""
+
+
+# Per-endpoint shape adapters. Each endpoint differs in where the prompt lives,
+# where context can be injected, and how the reply is shaped:
+#   chat/completions - `messages` + a prepended system message
+#   completions      - a `prompt` string
+#   responses        - `input` + top-level `instructions`
+
+def _chat_prompt(body: dict) -> str:
     for message in reversed(body.get("messages") or []):
         if message.get("role") == "user":
             content = message.get("content")
@@ -133,30 +182,81 @@ def _last_user_text(body: dict) -> str:
     return ""
 
 
-def _sse_reply(raw: str) -> str:
-    """Reconstruct the assistant message from a streamed SSE body."""
-    parts = []
-    for line in raw.splitlines():
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if data == "[DONE]":
-            break
-        try:
-            chunk = json.loads(data)
-        except ValueError:
-            continue
-        for choice in chunk.get("choices") or []:
-            parts.append((choice.get("delta") or {}).get("content") or "")
-    return "".join(parts)
+def _chat_inject(body: dict, context: str) -> None:
+    body["messages"] = [{"role": "system", "content": context}, *(body.get("messages") or [])]
 
 
-def _json_reply(payload: dict) -> str:
+def _chat_json_reply(payload: dict) -> str:
     for choice in payload.get("choices") or []:
         content = (choice.get("message") or {}).get("content")
         if isinstance(content, str):
             return content
     return ""
+
+
+def _chat_sse_reply(raw: str) -> str:
+    return _sse_join(raw, lambda e: _choice_text(e, "delta", "content"))
+
+
+def _legacy_prompt(body: dict) -> str:
+    prompt = body.get("prompt")
+    if isinstance(prompt, str):
+        return prompt
+    if isinstance(prompt, list):
+        return " ".join(p for p in prompt if isinstance(p, str))
+    return ""
+
+
+def _legacy_inject(body: dict, context: str) -> None:
+    body["prompt"] = f"{context}\n\n{_legacy_prompt(body)}"
+
+
+def _legacy_json_reply(payload: dict) -> str:
+    for choice in payload.get("choices") or []:
+        if isinstance(choice.get("text"), str):
+            return choice["text"]
+    return ""
+
+
+def _legacy_sse_reply(raw: str) -> str:
+    return _sse_join(raw, lambda e: _choice_text(e, None, "text"))
+
+
+def _responses_prompt(body: dict) -> str:
+    value = body.get("input")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        for item in reversed(value):
+            if isinstance(item, dict) and item.get("role") == "user":
+                content = item.get("content")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    return " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return ""
+
+
+def _responses_inject(body: dict, context: str) -> None:
+    existing = body.get("instructions")
+    body["instructions"] = f"{context}\n\n{existing}" if existing else context
+
+
+def _responses_json_reply(payload: dict) -> str:
+    parts = []
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for block in item.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "output_text":
+                parts.append(block.get("text") or "")
+    return "".join(parts)
+
+
+def _responses_sse_reply(raw: str) -> str:
+    return _sse_join(
+        raw, lambda e: e.get("delta") if e.get("type") == "response.output_text.delta" else ""
+    )
 
 
 async def _fetch_context(subject: str, task: str, session_id: str | None, headers: dict) -> str:
@@ -268,30 +368,34 @@ def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | No
     return hdr_subject, session_id, None
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: Request):
+async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json_reply, sse_reply):
+    """Shared body for the three memory-aware endpoints. `path` is the upstream
+    route; the four callables adapt this endpoint's request/response shape."""
     body = await request.json()
     subject, session_id, error = _resolve_subject(request, body)
     if error:
         return error
     sw_headers = _statewave_headers(request)
-    user_text = _last_user_text(body)
+    prompt = get_prompt(body)
 
     if subject:
-        context = await _fetch_context(subject, user_text, session_id, sw_headers)
+        context = await _fetch_context(subject, prompt, session_id, sw_headers)
         if context:
-            messages = body.get("messages") or []
-            body["messages"] = [{"role": "system", "content": context}, *messages]
+            inject(body, context)
 
-    url = f"{OPENROUTER_URL}/chat/completions"
+    url = f"{OPENROUTER_URL}/{path}"
     headers = _upstream_headers(request)
     model = body.get("model", "")
+
+    def record(reply: str) -> None:
+        # F14: an empty reply is not a turn worth remembering - both paths skip it.
+        if subject and reply:
+            _spawn(_write_turn(subject, session_id, prompt, reply, model, sw_headers))
 
     if not body.get("stream"):
         upstream = await client.post(url, json=body, headers=headers)
         if subject and upstream.status_code < 400:
-            reply = _json_reply(upstream.json())
-            _spawn(_write_turn(subject, session_id, user_text, reply, model, sw_headers))
+            record(json_reply(upstream.json()))
         return _relay(upstream)
 
     async def relay():
@@ -303,11 +407,36 @@ async def chat_completions(request: Request):
                 buffer += chunk
                 yield chunk
         if subject:
-            reply = _sse_reply(bytes(buffer).decode("utf-8", "ignore"))
-            if reply:
-                _spawn(_write_turn(subject, session_id, user_text, reply, model, sw_headers))
+            record(sse_reply(bytes(buffer).decode("utf-8", "ignore")))
 
     return StreamingResponse(relay(), media_type="text/event-stream")
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    return await _memory_proxy(
+        request, "chat/completions",
+        get_prompt=_chat_prompt, inject=_chat_inject,
+        json_reply=_chat_json_reply, sse_reply=_chat_sse_reply,
+    )
+
+
+@app.post("/v1/completions")
+async def completions(request: Request):
+    return await _memory_proxy(
+        request, "completions",
+        get_prompt=_legacy_prompt, inject=_legacy_inject,
+        json_reply=_legacy_json_reply, sse_reply=_legacy_sse_reply,
+    )
+
+
+@app.post("/v1/responses")
+async def responses(request: Request):
+    return await _memory_proxy(
+        request, "responses",
+        get_prompt=_responses_prompt, inject=_responses_inject,
+        json_reply=_responses_json_reply, sse_reply=_responses_sse_reply,
+    )
 
 
 @app.get("/health")

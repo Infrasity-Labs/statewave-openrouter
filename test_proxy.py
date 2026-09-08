@@ -48,9 +48,20 @@ def calls(monkeypatch):
             rl = {"x-ratelimit-remaining": "42", "x-request-id": "or-req-1"}
             if path.endswith("/models"):
                 return httpx.Response(200, json={"data": [{"id": "openai/gpt-4o"}]}, headers=rl)
+            if path.endswith("/responses"):
+                return httpx.Response(200, headers=rl, json={
+                    "output": [
+                        {"type": "message",
+                         "content": [{"type": "output_text", "text": "dark roast"}]}
+                    ]
+                })
+            if path.endswith("/completions") and not path.endswith("/chat/completions"):
+                return httpx.Response(200, json={"choices": [{"text": "dark roast"}]}, headers=rl)
             return httpx.Response(
                 200, json={"choices": [{"message": {"content": "dark roast"}}]}, headers=rl
             )
+        if path == "/healthz":
+            return httpx.Response(200, json={"version": "1.4.0"})
         if path == "/v1/context":
             return httpx.Response(200, json={"assembled_context": CONTEXT})
         if path == "/v1/episodes":
@@ -292,3 +303,105 @@ async def test_trusted_gateway_may_still_override_the_token_subject(calls, proxy
     )
     await drain()
     assert body_of(sent_to(calls, "/v1/context")[0])["subject_id"] == "team:7"
+
+
+# --- M3: legacy /v1/completions and the Responses API are memory-aware too ---
+
+
+async def test_legacy_completions_gets_context_and_writes_a_turn(calls, proxy, trusted):
+    response = await proxy.post(
+        "/v1/completions",
+        headers={"X-Statewave-Subject": "user:42"},
+        json={"model": "x", "prompt": "coffee?"},
+    )
+    await drain()
+    assert response.status_code == 200
+    forwarded = body_of(sent_to(calls, "/api/v1/completions")[0])
+    assert forwarded["prompt"] == f"{CONTEXT}\n\ncoffee?"
+    episode = body_of(sent_to(calls, "/v1/episodes")[0])
+    assert episode["payload"]["messages"] == [
+        {"role": "user", "content": "coffee?"},
+        {"role": "assistant", "content": "dark roast"},
+    ]
+
+
+async def test_responses_api_gets_context_and_writes_a_turn(calls, proxy, trusted):
+    await proxy.post(
+        "/v1/responses",
+        headers={"X-Statewave-Subject": "user:42"},
+        json={"model": "x", "input": "coffee?", "instructions": "Be brief."},
+    )
+    await drain()
+    forwarded = body_of(sent_to(calls, "/api/v1/responses")[0])
+    assert forwarded["instructions"] == f"{CONTEXT}\n\nBe brief."
+    episode = body_of(sent_to(calls, "/v1/episodes")[0])
+    assert episode["payload"]["messages"][1] == {"role": "assistant", "content": "dark roast"}
+
+
+async def test_no_episode_when_the_reply_is_empty(proxy, monkeypatch):
+    # F14: the non-stream path now skips the write on an empty reply, like stream.
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if "openrouter" in request.url.host:
+            return httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+        if request.url.path == "/v1/context":
+            return httpx.Response(200, json={"assembled_context": CONTEXT})
+        return httpx.Response(404, json={})
+
+    monkeypatch.setattr(sw, "client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(sw, "TRUST_CLIENT_SUBJECT", True)
+    await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "user:42"},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    await drain()
+    assert [r.url.path for r in seen if r.url.path == "/v1/episodes"] == []
+
+
+def test_sse_reply_parsers_match_their_endpoint_shapes():
+    chat = (
+        'data: {"choices":[{"delta":{"content":"da"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"rk"}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    legacy = (
+        'data: {"choices":[{"text":"da"}]}\n\n'
+        'data: {"choices":[{"text":"rk"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    responses = (
+        "event: response.output_text.delta\n"
+        'data: {"type":"response.output_text.delta","delta":"da"}\n\n'
+        'data: {"type":"response.output_text.delta","delta":"rk"}\n\n'
+        'data: {"type":"response.completed","response":{}}\n\n'
+    )
+    assert sw._chat_sse_reply(chat) == "dark"
+    assert sw._legacy_sse_reply(legacy) == "dark"
+    assert sw._responses_sse_reply(responses) == "dark"
+
+
+async def test_startup_warns_when_statewave_is_pre_1_0(monkeypatch, caplog):
+    monkeypatch.setattr(
+        sw, "client",
+        httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"version": "0.9.3"})
+        )),
+    )
+    with caplog.at_level("WARNING"):
+        await sw._warn_if_statewave_outdated()
+    assert "0.9.3" in caplog.text and ">= 1.0.0" in caplog.text
+
+
+async def test_startup_is_quiet_when_statewave_is_current(monkeypatch, caplog):
+    monkeypatch.setattr(
+        sw, "client",
+        httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"version": "1.4.0"})
+        )),
+    )
+    with caplog.at_level("WARNING"):
+        await sw._warn_if_statewave_outdated()
+    assert caplog.text == ""
