@@ -15,7 +15,7 @@ An OpenAI-compatible proxy that sits between your app and
    knows about this one.
 
 Point your existing OpenAI client at it, add one header, and the model
-remembers. Requests without a subject are forwarded untouched — memory is
+remembers. Requests without a subject are forwarded untouched - memory is
 opt-in per request, not a global mode.
 
 > **Part of the Statewave ecosystem:** [Server](https://github.com/smaramwbc/statewave) · [Python SDK](https://github.com/smaramwbc/statewave-py) · [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) · [Docs](https://github.com/smaramwbc/statewave-docs) · [Website](https://statewave.ai)
@@ -26,12 +26,12 @@ opt-in per request, not a global mode.
 
 ## Contents
 
-- [Quick start](#quick-start) — install, configure, run, verify
+- [Quick start](#quick-start) - install, configure, run, verify
 - [Use it from your app](#use-it-from-your-app)
 - [How a request flows](#how-a-request-flows)
 - [Memory-aware endpoints](#memory-aware-endpoints)
 - [Naming the subject](#naming-the-subject)
-- [Authenticating the subject](#authenticating-the-subject) — **read this before deploying**
+- [Authenticating the subject](#authenticating-the-subject) - **read this before deploying**
 - [Configuration](#configuration)
 - [Requires Statewave 1.0.0+](#requires-statewave-100)
 - [Failure behaviour](#failure-behaviour)
@@ -47,7 +47,7 @@ opt-in per request, not a global mode.
 | | |
 | --- | --- |
 | Python **3.11+** | or Docker, if you'd rather not install Python |
-| A **Statewave server**, 1.0.0 or newer | reachable from the proxy — see [statewave](https://github.com/smaramwbc/statewave) |
+| A **Statewave server**, 1.0.0 or newer | reachable from the proxy - see [statewave](https://github.com/smaramwbc/statewave) |
 | An **OpenRouter API key** | from [openrouter.ai/keys](https://openrouter.ai/keys) |
 
 ### 1. Install
@@ -74,7 +74,7 @@ works at all:
 | --- | --- |
 | `OPENROUTER_API_KEY` | Your OpenRouter key. Only used when the caller sends no `Authorization` header of its own. |
 | `STATEWAVE_URL` | Where your Statewave server is. Defaults to `http://localhost:8000`. |
-| `STATEWAVE_TRUST_CLIENT_SUBJECT=1` **or** `PROXY_JWT_SECRET=...` | How the proxy decides which subject a request may touch. **Pick one** — see [Authenticating the subject](#authenticating-the-subject). |
+| `STATEWAVE_TRUST_CLIENT_SUBJECT=1` **or** `PROXY_JWT_SECRET=...` | How the proxy decides which subject a request may touch. **Pick one** - see [Authenticating the subject](#authenticating-the-subject). |
 
 > ⚠️ **If you set neither of the last two**, any request that names a subject is
 > rejected with `400 statewave_untrusted_subject`. That is deliberate: an open
@@ -90,7 +90,7 @@ uvicorn statewave_openrouter:app --env-file .env --port 8080
 
 > 📌 **`--env-file` is not optional.** The proxy reads plain environment
 > variables and does not load `.env` by itself. Leave the flag off and it starts
-> with defaults — no OpenRouter key, Statewave assumed on `localhost:8000` — and
+> with defaults - no OpenRouter key, Statewave assumed on `localhost:8000` - and
 > the failures look like configuration you *did* set being ignored.
 
 <details>
@@ -109,8 +109,10 @@ docker run --rm -p 8080:8080 --env-file .env \
   ghcr.io/smaramwbc/statewave-openrouter:1.0.0
 ```
 
-Note that `localhost` inside a container is the container. If Statewave runs on
-your host, use `STATEWAVE_URL=http://host.docker.internal:8000`.
+Note that `localhost` inside a container is the container. If Statewave runs
+on your host, use `STATEWAVE_URL=http://host.docker.internal:8000`. On Docker
+for Linux that name does not resolve on its own, so add
+`--add-host=host.docker.internal:host-gateway` to the `docker run`.
 </details>
 
 ### 4. Verify
@@ -120,7 +122,9 @@ curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
-Then a real call — this one goes to OpenRouter *and* through Statewave:
+Then a real call - this one goes to OpenRouter *and* through Statewave.
+
+If you chose `STATEWAVE_TRUST_CLIENT_SUBJECT=1`:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -129,9 +133,13 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"What coffee do I like?"}]}'
 ```
 
+If you chose `PROXY_JWT_SECRET`, the subject comes from a token instead, so use
+the call in [Authenticating the subject](#authenticating-the-subject). Sending
+`X-Statewave-Subject` on its own gets you `401 statewave_auth_required`.
+
 You should see a normal OpenAI-shaped response. Watch the proxy's log: a
 warning there means Statewave was skipped for that turn and the completion went
-through without memory — see [Failure behaviour](#failure-behaviour).
+through without memory - see [Failure behaviour](#failure-behaviour).
 
 ---
 
@@ -151,7 +159,7 @@ client.chat.completions.create(
 )
 ```
 
-Streaming needs no special handling — `stream=True` works as usual.
+Streaming needs no special handling - `stream=True` works as usual.
 
 ---
 
@@ -175,7 +183,7 @@ upstream status and headers come with them, and the episode is written once the
 stream closes. The reply is reassembled line by line as it flows, so a long
 stream costs the reply text rather than a second copy of the body.
 
-An empty reply writes no episode, streamed or not — a turn with no answer in it
+An empty reply writes no episode, streamed or not - a turn with no answer in it
 is noise in the subject's memory, not history.
 
 ---
@@ -190,7 +198,7 @@ Three endpoints get memory. They differ only in where the bundle can go:
 | `POST /v1/completions` | ahead of `prompt` | `choices[].text` |
 | `POST /v1/responses` | ahead of `instructions`; `input` is untouched | `output[].content[].text` |
 
-Every other path (`/v1/models`, `/v1/credits`, …) is proxied straight to
+Every other path (`/v1/models`, `/v1/credits` and the rest) is proxied straight to
 OpenRouter, so the proxy is a drop-in base URL replacement.
 
 ---
@@ -208,8 +216,8 @@ A **subject** is who the memory belongs to (`user:42`, `team:acme`). A
 The header wins if both are present. Body fields are stripped before the
 request reaches OpenRouter.
 
-Ids are **1–256 characters** of letters, digits, underscore, dot, dash or colon
-— no `/`, no whitespace. Anything else is rejected with `400
+Ids are **1-256 characters** of letters, digits, underscore, dot, dash or
+colon, with no `/` and no whitespace. Anything else is rejected with `400
 statewave_bad_request` by the proxy, before any upstream call.
 
 Multi-tenant Statewave deployments: send `X-Tenant-ID` and it is forwarded, or
@@ -224,15 +232,18 @@ the proxy decides:
 
 | Set | Effect | Use when |
 | --- | --- | --- |
-| *nothing* | A request carrying a subject gets `400 statewave_untrusted_subject`. Subject-less pass-through still works. | Never intentionally — this is the safe default, not a mode. |
+| *nothing* | A request carrying a subject gets `400 statewave_untrusted_subject`. Subject-less pass-through still works. | Never intentionally - this is the safe default, not a mode. |
 | `STATEWAVE_TRUST_CLIENT_SUBJECT=1` | `X-Statewave-Subject` is trusted as sent. | Laptop, private network, or behind a gateway that already authenticates callers. |
 | `PROXY_JWT_SECRET=<hs256 secret>` | Every completion call must send `X-Statewave-Token: <jwt>` signed with that secret. The subject is the token's `sub` claim; `X-Statewave-Subject` is ignored. Missing or bad token → `401`. | Anything reachable by clients you do not control. |
 
 Setting **both** keeps token verification on while letting a trusted gateway
-choose the subject per request — it authenticates itself with a token, then
+choose the subject per request - it authenticates itself with a token, then
 names whichever subject it is acting for.
 
 ```bash
+# The proxy reads the secret from .env; this shell has to know it too.
+export PROXY_JWT_SECRET='the same secret you put in .env'
+
 TOKEN=$(python -c "import jwt; print(jwt.encode({'sub':'user:42'}, '$PROXY_JWT_SECRET', algorithm='HS256'))")
 
 curl http://localhost:8080/v1/chat/completions \
@@ -254,17 +265,17 @@ Everything is environment variables. `.env.example` is the annotated copy.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | — | Fallback key, used only when the caller sends no `Authorization` header |
+| `OPENROUTER_API_KEY` | - | Fallback key, used only when the caller sends no `Authorization` header |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Upstream |
-| `OPENROUTER_SITE_URL` / `OPENROUTER_SITE_NAME` | — | OpenRouter attribution (`HTTP-Referer` / `X-Title`) |
+| `OPENROUTER_SITE_URL` / `OPENROUTER_SITE_NAME` | - | OpenRouter attribution (`HTTP-Referer` / `X-Title`) |
 
 **Statewave**
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `STATEWAVE_URL` | `http://localhost:8000` | Statewave server |
-| `STATEWAVE_API_KEY` | — | Sent as `X-API-Key` |
-| `STATEWAVE_TENANT_ID` | — | Default tenant when the caller sends no `X-Tenant-ID` |
+| `STATEWAVE_API_KEY` | - | Sent as `X-API-Key` |
+| `STATEWAVE_TENANT_ID` | - | Default tenant when the caller sends no `X-Tenant-ID` |
 | `STATEWAVE_CONTEXT_TOKENS` | `1500` | Token budget for the injected bundle |
 | `STATEWAVE_COMPILE_AFTER_TURN` | off | Kick an async compile after each turn |
 | `STATEWAVE_EPISODE_SOURCE` | `openrouter-proxy` | `source` recorded on written episodes |
@@ -275,10 +286,10 @@ Everything is environment variables. `.env.example` is the annotated copy.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PROXY_JWT_SECRET` | — | HS256 secret; when set, every completion call needs a valid `X-Statewave-Token` and the subject is its `sub` claim |
+| `PROXY_JWT_SECRET` | - | HS256 secret; when set, every completion call needs a valid `X-Statewave-Token` and the subject is its `sub` claim |
 | `STATEWAVE_TRUST_CLIENT_SUBJECT` | off | Trust the `X-Statewave-Subject` header (see [Authenticating the subject](#authenticating-the-subject)) |
 | `PROXY_TIMEOUT` | `120` | Upstream request timeout in seconds (connect timeout is fixed at 10) |
-| `PORT` | `8080` | Container only — the port uvicorn binds inside the image |
+| `PORT` | `8080` | Container only - the port uvicorn binds inside the image |
 
 ---
 
@@ -299,7 +310,7 @@ the endpoint or the field just boots without the warning.
 ## Failure behaviour
 
 **Statewave is an enhancement, never a hard dependency.** If context assembly or
-the episode write fails — server down, wrong key, timeout — it is logged and the
+the episode write fails - server down, wrong key, timeout - it is logged and the
 completion still goes through, just without memory for that turn. A Statewave
 outage degrades your app's quality; it does not take it down.
 
@@ -313,9 +324,9 @@ closes, since that is the only place a turn exists before Statewave has it.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `400 statewave_untrusted_subject` | Neither trust mode is configured | Set `STATEWAVE_TRUST_CLIENT_SUBJECT=1`, or `PROXY_JWT_SECRET` and send a token |
-| `401 statewave_auth_required` | `PROXY_JWT_SECRET` is set, no `X-Statewave-Token` sent | Send the token header — note it is *not* `Authorization` |
+| `401 statewave_auth_required` | `PROXY_JWT_SECRET` is set, no `X-Statewave-Token` sent | Send the token header - note it is *not* `Authorization` |
 | `401 statewave_bad_token` | Token signature, expiry or algorithm mismatch | Sign with HS256 using exactly the configured secret |
-| `400 statewave_bad_request` | Subject or session id has illegal characters | 1–256 chars of letters, digits, `_ . - :` — no `/`, no spaces |
+| `400 statewave_bad_request` | Subject or session id has illegal characters | 1-256 chars of letters, digits, `_ . - :` - no `/`, no spaces |
 | Replies work but carry no memory, no error | The turn ran without Statewave, by design | Check the proxy log for a warning; verify `STATEWAVE_URL` and that the subject has compiled memories |
 | Config you set appears ignored | `.env` is not read automatically | Start with `uvicorn ... --env-file .env`, or export the variables |
 | Log: `statewave rejected the gateway (401)` | Statewave refused the proxy itself | Check `STATEWAVE_API_KEY`, and `STATEWAVE_CALLER_ID` / `STATEWAVE_CALLER_TYPE` on tenants requiring caller identity |
@@ -327,7 +338,7 @@ closes, since that is the only place a turn exists before Statewave has it.
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 22 tests, both upstreams faked with httpx MockTransport
+pytest          # both upstreams faked with httpx MockTransport
 ruff check .
 ```
 
