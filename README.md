@@ -1,5 +1,6 @@
 # statewave-openrouter
 
+[![CI](https://github.com/Infrasity-Labs/statewave-openrouter/actions/workflows/ci.yml/badge.svg)](https://github.com/Infrasity-Labs/statewave-openrouter/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![Status: 1.0.0](https://img.shields.io/badge/status-1.0.0-green.svg)](CHANGELOG.md)

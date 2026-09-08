@@ -8,6 +8,8 @@ name: Release
 #   2. nothing for ghcr - but the package is private on first push, so make it
 #      public afterwards or `docker pull` fails outside the org.
 # Both are per-repo: re-do them if the project moves to another owner.
+# The CI badge in README.md also names the current owner; GitHub redirects it
+# after a transfer, but it is worth repointing.
 on:
   push:
     tags: ["v*"]
