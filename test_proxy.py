@@ -345,6 +345,24 @@ async def test_a_token_signed_with_the_wrong_secret_is_rejected(calls, proxy, mo
     assert calls == []
 
 
+async def test_passthrough_cannot_spend_the_key_without_a_token(calls, proxy, monkeypatch):
+    # Same request, four characters shorter: /chat/completions misses the three
+    # gated handlers and lands on `passthrough`, which used to forward it to
+    # OpenRouter on OPENROUTER_API_KEY (S3).
+    monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
+    for path in ("/chat/completions", "/v1/models", "/v1/credits"):
+        response = await proxy.post(path, json={"model": "x", "messages": []})
+        assert response.status_code == 401, path
+    assert calls == []
+
+
+async def test_passthrough_still_works_for_a_verified_caller(calls, proxy, monkeypatch):
+    monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
+    response = await proxy.get("/v1/models", headers={"X-Statewave-Token": token("user:42")})
+    assert response.status_code == 200
+    assert sent_to(calls, "/api/v1/models")
+
+
 async def test_forged_subject_header_loses_to_the_token(calls, proxy, monkeypatch):
     monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
     await proxy.post(
