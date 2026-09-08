@@ -223,6 +223,20 @@ statewave_bad_request` by the proxy, before any upstream call.
 Multi-tenant Statewave deployments: send `X-Tenant-ID` and it is forwarded, or
 pin one with `STATEWAVE_TENANT_ID`.
 
+> **The tenant is part of the memory's identity.** A turn written under one
+> tenant is invisible to a read under another, and to a read that names no
+> tenant at all, even for the same subject id. Changing `STATEWAVE_TENANT_ID`
+> on a running deployment, or adding it where there was none, makes existing
+> memory look empty: no error, no warning, just an empty bundle. Pick a tenant
+> before you have memory worth keeping and leave it alone.
+>
+> Statewave applies a tenant's configuration only to requests that name that
+> tenant. On the server we tested, `require_caller_identity: true` rejected an
+> anonymous read with `401` when the request carried `X-Tenant-ID`, and allowed
+> the identical read through when it did not. If you rely on that setting,
+> pin `STATEWAVE_TENANT_ID` so every retrieval is bound to the tenant that
+> enforces it.
+
 ---
 
 ## Authenticating the subject
@@ -328,6 +342,7 @@ closes, since that is the only place a turn exists before Statewave has it.
 | `401 statewave_bad_token` | Token signature, expiry or algorithm mismatch | Sign with HS256 using exactly the configured secret |
 | `400 statewave_bad_request` | Subject or session id has illegal characters | 1-256 chars of letters, digits, `_ . - :` - no `/`, no spaces |
 | Replies work but carry no memory, no error | The turn ran without Statewave, by design | Check the proxy log for a warning; verify `STATEWAVE_URL` and that the subject has compiled memories |
+| Memory went empty after a config change | Memories are scoped per tenant, and the tenant changed | Put `STATEWAVE_TENANT_ID` back to what it was, or leave it unset if it always was. The same subject under a different tenant is a different memory |
 | Config you set appears ignored | `.env` is not read automatically | Start with `uvicorn ... --env-file .env`, or export the variables |
 | Log: `statewave rejected the gateway (401)` | Statewave refused the proxy itself | Check `STATEWAVE_API_KEY`, and `STATEWAVE_CALLER_ID` / `STATEWAVE_CALLER_TYPE` on tenants requiring caller identity |
 | Container cannot reach Statewave | `localhost` inside a container is the container | `STATEWAVE_URL=http://host.docker.internal:8000` |
