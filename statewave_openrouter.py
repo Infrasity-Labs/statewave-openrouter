@@ -87,7 +87,9 @@ async def _warn_if_statewave_outdated() -> None:
     """README pins Statewave >= 1.0.0 (caller-identity + tenant-config surface).
     Best-effort nudge on boot; a missing endpoint or field is silently fine."""
     try:
-        response = await client.get(f"{STATEWAVE_URL}/healthz", timeout=5.0)
+        # /healthz answers {"status": "ok"} and nothing else, so reading a
+        # version from it never found one. /v1/version carries it and is public.
+        response = await client.get(f"{STATEWAVE_URL}/v1/version", timeout=5.0)
         version = (response.json() or {}).get("version", "")
     except Exception:  # noqa: BLE001 - never let a probe stop the proxy booting
         return
