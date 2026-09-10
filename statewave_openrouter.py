@@ -47,6 +47,11 @@ EPISODE_SOURCE = os.getenv("STATEWAVE_EPISODE_SOURCE", "openrouter-proxy")
 # empty caller_id, which reads as "no caller identity" server-side.
 CALLER_TYPE = os.getenv("STATEWAVE_CALLER_TYPE") or "openrouter-gateway"
 CALLER_ID = os.getenv("STATEWAVE_CALLER_ID") or CALLER_TYPE
+# A pinned tenant. When set it overrides a client X-Tenant-ID header: on a
+# Statewave tenant that enforces require_caller_identity or a policy_mode,
+# letting any caller name the tenant is a cross-tenant read and write. Unset,
+# one deployment is one tenant and the header is the only source.
+STATEWAVE_TENANT = os.getenv("STATEWAVE_TENANT_ID", "")
 TIMEOUT = httpx.Timeout(float(os.getenv("PROXY_TIMEOUT", "120")), connect=10.0)
 
 # Statewave subject/session charset: letters, digits, _ . - : - no "/" or
@@ -134,7 +139,7 @@ async def _require_token(request: Request, call_next):
             401, "statewave requires a token in X-Statewave-Token", "statewave_auth_required"
         )
     try:
-        jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        jwt.decode(token, JWT_SECRET, algorithms=["HS256"], options={"require": ["exp"]})
     except jwt.InvalidTokenError as exc:
         return _error(401, f"invalid statewave token: {exc}", "statewave_bad_token")
     return await call_next(request)
@@ -151,7 +156,7 @@ def _statewave_headers(request: Request) -> dict[str, str]:
     headers = {}
     if STATEWAVE_KEY:
         headers["X-API-Key"] = STATEWAVE_KEY
-    tenant = request.headers.get("x-tenant-id") or os.getenv("STATEWAVE_TENANT_ID", "")
+    tenant = STATEWAVE_TENANT or request.headers.get("x-tenant-id", "")
     if tenant:
         headers["X-Tenant-ID"] = tenant
     return headers
@@ -388,7 +393,9 @@ def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | No
                 401, "statewave requires a token in X-Statewave-Token", "statewave_auth_required"
             )
         try:
-            claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            claims = jwt.decode(
+                token, JWT_SECRET, algorithms=["HS256"], options={"require": ["exp"]}
+            )
         except jwt.InvalidTokenError as exc:
             return None, None, _error(401, f"invalid statewave token: {exc}", "statewave_bad_token")
         subject = hdr_subject if (TRUST_CLIENT_SUBJECT and hdr_subject) else claims.get("sub")
@@ -411,7 +418,10 @@ def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | No
 async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json_reply, sse_pick):
     """Shared body for the three memory-aware endpoints. `path` is the upstream
     route; the four callables adapt this endpoint's request/response shape."""
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError:
+        return _error(400, "request body is not valid JSON", "statewave_bad_request")
     subject, session_id, error = _resolve_subject(request, body)
     if error:
         return error
@@ -433,7 +443,10 @@ async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json
             _spawn(_write_turn(subject, session_id, prompt, reply, model, sw_headers))
 
     if not body.get("stream"):
-        upstream = await client.post(url, json=body, headers=headers)
+        try:
+            upstream = await client.post(url, json=body, headers=headers)
+        except httpx.RequestError as exc:
+            return _error(502, f"openrouter request failed: {exc}", "openrouter_unreachable")
         if subject and upstream.status_code < 400:
             record(json_reply(upstream.json()))
         return _relay(upstream)
@@ -442,7 +455,10 @@ async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json
     # headers have to be known before the response object exists, and that is
     # what kept the stream path from relaying them (O3).
     stream = client.stream("POST", url, json=body, headers=headers)
-    upstream = await stream.__aenter__()
+    try:
+        upstream = await stream.__aenter__()
+    except httpx.RequestError as exc:
+        return _error(502, f"openrouter request failed: {exc}", "openrouter_unreachable")
 
     async def relay():
         # One line at a time as it flows. Buffering the whole SSE body to
@@ -507,11 +523,14 @@ async def health():
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def passthrough(path: str, request: Request):
     """Everything else (models, credits, generation) goes straight to OpenRouter."""
-    upstream = await client.request(
-        request.method,
-        f"{OPENROUTER_URL}/{path.removeprefix('v1/')}",
-        content=await request.body(),
-        headers=_upstream_headers(request),
-        params=request.query_params,
-    )
+    try:
+        upstream = await client.request(
+            request.method,
+            f"{OPENROUTER_URL}/{path.removeprefix('v1/')}",
+            content=await request.body(),
+            headers=_upstream_headers(request),
+            params=request.query_params,
+        )
+    except httpx.RequestError as exc:
+        return _error(502, f"openrouter request failed: {exc}", "openrouter_unreachable")
     return _relay(upstream)
