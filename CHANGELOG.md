@@ -26,7 +26,17 @@ what follow-up releases have to keep working.
   and pushed by a tag-driven `Release` workflow that also publishes to PyPI
   (O7, O8). The container listens on `$PORT` (8080 by default), runs as `nobody`.
 
+### Security
+- A pinned `STATEWAVE_TENANT_ID` overrides a client `X-Tenant-ID` header rather
+  than the header winning. Without it, any caller - a valid token holder
+  included - could point a request at another tenant's memory.
+- JWT verification requires an `exp` claim; a token without one is rejected with
+  `401 statewave_bad_token`.
+
 ### Changed
+- Invalid JSON in a request body returns `400 statewave_bad_request`, and an
+  unreachable OpenRouter returns `502 openrouter_unreachable`, instead of an
+  unhandled `500`.
 - Non-stream and pass-through responses relay all upstream headers
   (`x-ratelimit-*`, OpenRouter request id, and the rest) via a shared `_relay`
   builder, instead of keeping only `content-type` (O3).

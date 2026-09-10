@@ -220,13 +220,15 @@ Ids are **1-256 characters** of letters, digits, underscore, dot, dash or
 colon, with no `/` and no whitespace. Anything else is rejected with `400
 statewave_bad_request` by the proxy, before any upstream call.
 
-Multi-tenant Statewave deployments: send `X-Tenant-ID` and it is forwarded, or
-pin one with `STATEWAVE_TENANT_ID`.
+Multi-tenant Statewave deployments: pin the tenant with `STATEWAVE_TENANT_ID`,
+or leave it unset and send `X-Tenant-ID` per request. A pinned tenant always
+wins over the header, so a caller cannot reach another tenant's memory.
 
 > **The tenant is part of the memory's identity.** A turn written under one
-> tenant is invisible to a read under another, and to a read that names no
-> tenant at all, even for the same subject id. Changing `STATEWAVE_TENANT_ID`
-> on a running deployment, or adding it where there was none, makes existing
+> tenant is read back only under that same tenant; how strictly a read under a
+> different tenant, or none at all, is walled off depends on the Statewave
+> server's configuration. Either way, changing `STATEWAVE_TENANT_ID` on a
+> running deployment, or adding it where there was none, can make existing
 > memory look empty: no error, no warning, just an empty bundle. Pick a tenant
 > before you have memory worth keeping and leave it alone.
 >
@@ -254,6 +256,10 @@ Setting **both** keeps token verification on while letting a trusted gateway
 choose the subject per request - it authenticates itself with a token, then
 names whichever subject it is acting for.
 
+> ⚠️ In this mode any valid token can name any subject. The tokens MUST be
+> minted by that gateway and never handed to end users - an end-user token here
+> is a key to every subject's memory.
+
 ```bash
 # The proxy reads the secret from .env; this shell has to know it too.
 export PROXY_JWT_SECRET='the same secret you put in .env'
@@ -266,8 +272,9 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"What coffee do I like?"}]}'
 ```
 
-The proxy verifies tokens; it does not mint, rotate or revoke them. Your issuer
-does that.
+Tokens must carry an `exp` claim - one without it is rejected, so a leaked
+token cannot be valid forever. The proxy verifies tokens; it does not mint,
+rotate or revoke them. Your issuer does that.
 
 ---
 
@@ -289,7 +296,7 @@ Everything is environment variables. `.env.example` is the annotated copy.
 | --- | --- | --- |
 | `STATEWAVE_URL` | `http://localhost:8000` | Statewave server |
 | `STATEWAVE_API_KEY` | - | Sent as `X-API-Key` |
-| `STATEWAVE_TENANT_ID` | - | Default tenant when the caller sends no `X-Tenant-ID` |
+| `STATEWAVE_TENANT_ID` | - | Pinned tenant; when set, overrides any client `X-Tenant-ID` header |
 | `STATEWAVE_CONTEXT_TOKENS` | `1500` | Token budget for the injected bundle |
 | `STATEWAVE_COMPILE_AFTER_TURN` | off | Kick an async compile after each turn |
 | `STATEWAVE_EPISODE_SOURCE` | `openrouter-proxy` | `source` recorded on written episodes |
@@ -339,7 +346,7 @@ closes, since that is the only place a turn exists before Statewave has it.
 | --- | --- | --- |
 | `400 statewave_untrusted_subject` | Neither trust mode is configured | Set `STATEWAVE_TRUST_CLIENT_SUBJECT=1`, or `PROXY_JWT_SECRET` and send a token |
 | `401 statewave_auth_required` | `PROXY_JWT_SECRET` is set, no `X-Statewave-Token` sent | Send the token header - note it is *not* `Authorization` |
-| `401 statewave_bad_token` | Token signature, expiry or algorithm mismatch | Sign with HS256 using exactly the configured secret |
+| `401 statewave_bad_token` | Token signature, algorithm, or `exp` problem - expired, or no `exp` claim at all | Sign with HS256 using exactly the configured secret, and always set `exp` |
 | `400 statewave_bad_request` | Subject or session id has illegal characters | 1-256 chars of letters, digits, `_ . - :` - no `/`, no spaces |
 | Replies work but carry no memory, no error | The turn ran without Statewave, by design | Check the proxy log for a warning; verify `STATEWAVE_URL` and that the subject has compiled memories |
 | Memory went empty after a config change | Memories are scoped per tenant, and the tenant changed | Put `STATEWAVE_TENANT_ID` back to what it was, or leave it unset if it always was. The same subject under a different tenant is a different memory |

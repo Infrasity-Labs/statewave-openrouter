@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import time
 
 import httpx
 import jwt
@@ -21,7 +22,10 @@ SECRET = "test-secret-padded-to-32-bytes-min!"
 
 
 def token(sub, secret=SECRET, **claims):
-    return jwt.encode({"sub": sub, **claims}, secret, algorithm="HS256")
+    # exp is required now; default to a live one, pass exp=None to omit it.
+    claims.setdefault("exp", int(time.time()) + 3600)
+    payload = {"sub": sub, **{k: v for k, v in claims.items() if v is not None}}
+    return jwt.encode(payload, secret, algorithm="HS256")
 
 
 @pytest.fixture
@@ -81,8 +85,6 @@ def calls(monkeypatch):
             return httpx.Response(
                 200, json={"choices": [{"message": {"content": "dark roast"}}]}, headers=rl
             )
-        if path == "/healthz":
-            return httpx.Response(200, json={"version": "1.4.0"})
         if path == "/v1/context":
             return httpx.Response(200, json={"assembled_context": CONTEXT})
         if path == "/v1/episodes":
@@ -151,6 +153,20 @@ async def test_context_injected_and_turn_written(calls, proxy, trusted):
         ],
         "model": "openai/gpt-4o",
     }
+
+
+async def test_pinned_tenant_beats_a_client_header(calls, proxy, monkeypatch, trusted):
+    # A valid caller must not be able to point the proxy at another tenant's
+    # memory by sending its own X-Tenant-ID.
+    monkeypatch.setattr(sw, "STATEWAVE_TENANT", "tenant-a")
+    await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "user:42", "X-Tenant-ID": "tenant-b"},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    await drain()
+    assert sent_to(calls, "/v1/context")[0].headers["X-Tenant-ID"] == "tenant-a"
+    assert sent_to(calls, "/v1/episodes")[0].headers["X-Tenant-ID"] == "tenant-a"
 
 
 async def test_no_subject_is_plain_passthrough(calls, proxy):
@@ -308,6 +324,32 @@ async def test_upstream_rate_limit_headers_survive_the_round_trip(calls, proxy):
         assert response.headers["x-request-id"] == "or-req-1"
 
 
+async def test_invalid_json_body_is_a_clean_400(calls, proxy):
+    response = await proxy.post(
+        "/v1/chat/completions",
+        headers={"Content-Type": "application/json"},
+        content=b"{ not json",
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "statewave_bad_request"
+    assert calls == []
+
+
+async def test_openrouter_unreachable_is_a_502(proxy, monkeypatch):
+    def handler(request):
+        if "openrouter" in request.url.host:
+            raise httpx.ConnectError("no route", request=request)
+        return httpx.Response(404, json={})
+
+    monkeypatch.setattr(sw, "client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    response = await proxy.post(
+        "/v1/chat/completions",
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "openrouter_unreachable"
+
+
 # --- M2: subject is derived from a verified token, not asserted by the caller ---
 
 
@@ -338,6 +380,18 @@ async def test_a_token_signed_with_the_wrong_secret_is_rejected(calls, proxy, mo
     response = await proxy.post(
         "/v1/chat/completions",
         headers={"X-Statewave-Token": token("user:42", secret="a-different-secret-also-32-bytes-x!")},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 401
+    assert response.json()["error"]["type"] == "statewave_bad_token"
+    assert calls == []
+
+
+async def test_a_token_without_exp_is_rejected(calls, proxy, monkeypatch):
+    monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
+    response = await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Token": token("user:42", exp=None)},
         json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert response.status_code == 401
