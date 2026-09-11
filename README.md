@@ -1,30 +1,30 @@
 # statewave-openrouter
 
-[![CI](https://github.com/Infrasity-Labs/statewave-openrouter/actions/workflows/ci.yml/badge.svg)](https://github.com/Infrasity-Labs/statewave-openrouter/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
-[![Status: 1.0.0](https://img.shields.io/badge/status-1.0.0-green.svg)](CHANGELOG.md)
+<p align="center">
+  <img src="docs/banner.svg" alt="statewave-openrouter - OpenAI-compatible proxy that gives OpenRouter calls Statewave memory" width="100%">
+</p>
 
-An OpenAI-compatible proxy that sits between your app and
-[OpenRouter](https://openrouter.ai), giving every call
-[Statewave](https://github.com/smaramwbc/statewave) memory:
+<p align="center">
+  <a href="https://github.com/Infrasity-Labs/statewave-openrouter/actions/workflows/ci.yml"><img src="https://github.com/Infrasity-Labs/statewave-openrouter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/status-1.0.0-green.svg" alt="Status: 1.0.0"></a>
+</p>
 
-1. **Before** forwarding, it assembles a Statewave context bundle for the
-   request's subject and injects it into the request.
-2. **After** the reply, it writes the turn back as an episode, so the next call
-   knows about this one.
+Point your existing OpenAI client at this proxy, add one header, and the model
+remembers - no subject header means plain pass-through, so memory is opt-in
+per request, not a global mode.
 
-Point your existing OpenAI client at it, add one header, and the model
-remembers. Requests without a subject are forwarded untouched - memory is
-opt-in per request, not a global mode.
+| | |
+| --- | --- |
+| **Before** the call | assembles a Statewave context bundle for the subject, injects it into the request |
+| **After** the reply | writes the turn back to Statewave as an episode, so the next call knows about this one |
 
 > **Part of the Statewave ecosystem:** [Server](https://github.com/smaramwbc/statewave) · [Python SDK](https://github.com/smaramwbc/statewave-py) · [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) · [Docs](https://github.com/smaramwbc/statewave-docs) · [Website](https://statewave.ai)
->
-> 📋 **Issues & feature requests:** tracked centrally on [`smaramwbc/statewave`](https://github.com/smaramwbc/statewave/issues).
+> 📋 Issues & feature requests are tracked centrally on [`smaramwbc/statewave`](https://github.com/smaramwbc/statewave/issues).
 
----
-
-## Contents
+<details open>
+<summary><b>Contents</b></summary>
 
 - [Quick start](#quick-start) - install, configure, run, verify
 - [Use it from your app](#use-it-from-your-app)
@@ -37,6 +37,8 @@ opt-in per request, not a global mode.
 - [Failure behaviour](#failure-behaviour)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
+
+</details>
 
 ---
 
@@ -76,11 +78,11 @@ works at all:
 | `STATEWAVE_URL` | Where your Statewave server is. Defaults to `http://localhost:8000`. |
 | `STATEWAVE_TRUST_CLIENT_SUBJECT=1` **or** `PROXY_JWT_SECRET=...` | How the proxy decides which subject a request may touch. **Pick one** - see [Authenticating the subject](#authenticating-the-subject). |
 
-> ⚠️ **If you set neither of the last two**, any request that names a subject is
-> rejected with `400 statewave_untrusted_subject`. That is deliberate: an open
-> port that trusts a header lets anyone read and write anyone's memory. For a
-> laptop or a private network, `STATEWAVE_TRUST_CLIENT_SUBJECT=1` is the right
-> answer.
+> [!NOTE]
+> Set neither of the last two, and any request naming a subject gets
+> `400 statewave_untrusted_subject`. That's deliberate - an open port that
+> trusts a header lets anyone read and write anyone's memory. On a laptop or
+> private network, `STATEWAVE_TRUST_CLIENT_SUBJECT=1` is the right answer.
 
 ### 3. Run
 
@@ -88,10 +90,11 @@ works at all:
 uvicorn statewave_openrouter:app --env-file .env --port 8080
 ```
 
-> 📌 **`--env-file` is not optional.** The proxy reads plain environment
-> variables and does not load `.env` by itself. Leave the flag off and it starts
-> with defaults - no OpenRouter key, Statewave assumed on `localhost:8000` - and
-> the failures look like configuration you *did* set being ignored.
+> [!IMPORTANT]
+> `--env-file` is not optional. The proxy reads plain environment variables
+> and does not load `.env` by itself. Leave the flag off and it starts with
+> defaults - no OpenRouter key, Statewave assumed on `localhost:8000` - and the
+> failures look like configuration you *did* set being ignored.
 
 <details>
 <summary><b>Docker instead</b></summary>
@@ -165,26 +168,20 @@ Streaming needs no special handling - `stream=True` works as usual.
 
 ## How a request flows
 
-```
-client ──POST /v1/chat/completions──▶ proxy ──POST /v1/context────▶ statewave
-                                       │  ◀──assembled_context─────┘
-                                       ├──messages = [system(context), ...original]
-                                       ├──────────────────────────▶ openrouter
-                                       │  ◀──completion────────────┘
-                                       ├──POST /v1/episodes───────▶ statewave  (async)
-                                    client ◀──completion (verbatim bytes)
-```
+<p align="center">
+  <img src="docs/flow.svg" alt="Request flow: client calls statewave-openrouter, which fetches context from Statewave, forwards to OpenRouter, relays the reply, then writes the episode back to Statewave asynchronously" width="100%">
+</p>
 
-The episode write happens off the response path, so it never adds latency to
-the completion.
+Three things worth knowing about that last step and the streaming case:
 
-**Streaming** works the same way: SSE chunks are relayed byte-for-byte, the
-upstream status and headers come with them, and the episode is written once the
-stream closes. The reply is reassembled line by line as it flows, so a long
-stream costs the reply text rather than a second copy of the body.
-
-An empty reply writes no episode, streamed or not - a turn with no answer in it
-is noise in the subject's memory, not history.
+- The episode write is fire-and-forget - it never adds latency to the
+  completion.
+- **Streaming** works the same way: SSE chunks are relayed byte-for-byte as
+  they arrive, and the reply is reassembled line by line so a long stream
+  costs the reply text, not a second copy of the body. The episode is written
+  once the stream closes.
+- An empty reply writes no episode, streamed or not - a turn with no answer in
+  it is noise in the subject's memory, not history.
 
 ---
 
@@ -220,31 +217,26 @@ Ids are **1-256 characters** of letters, digits, underscore, dot, dash or
 colon, with no `/` and no whitespace. Anything else is rejected with `400
 statewave_bad_request` by the proxy, before any upstream call.
 
-Multi-tenant Statewave deployments: pin the tenant with `STATEWAVE_TENANT_ID`,
-or leave it unset and send `X-Tenant-ID` per request. A pinned tenant always
-wins over the header, so a caller cannot reach another tenant's memory.
+**Multi-tenant Statewave, three ways to pick the tenant** - first match wins:
 
-With `PROXY_JWT_SECRET` set and no pinned tenant, the tenant comes from a
-`tenant` claim on the verified token, never from the client's `X-Tenant-ID`
-header - a caller with a valid token still cannot pick the tenant. A token
-with no `tenant` claim sends no tenant at all. This lets one deployment serve
-several tenants safely off one set of signed tokens, each token naming its
-own tenant.
+| # | Source | When it applies |
+| --- | --- | --- |
+| 1 | `STATEWAVE_TENANT_ID` (pinned) | Always wins, over everything below |
+| 2 | `tenant` claim on the verified JWT | `PROXY_JWT_SECRET` set, nothing pinned - no claim means no tenant, never a fallback to the header |
+| 3 | `X-Tenant-ID` header | No pin, no JWT mode - single-tenant deploys or a self-authing gateway |
 
+> [!WARNING]
 > **The tenant is part of the memory's identity.** A turn written under one
-> tenant is read back only under that same tenant; how strictly a read under a
-> different tenant, or none at all, is walled off depends on the Statewave
-> server's configuration. Either way, changing `STATEWAVE_TENANT_ID` on a
-> running deployment, or adding it where there was none, can make existing
-> memory look empty: no error, no warning, just an empty bundle. Pick a tenant
-> before you have memory worth keeping and leave it alone.
+> tenant is read back only under that same tenant. Changing
+> `STATEWAVE_TENANT_ID` on a running deployment - or adding it where there was
+> none - can make existing memory look empty: no error, just an empty bundle.
+> Pick a tenant before you have memory worth keeping, then leave it alone.
 >
-> Statewave applies a tenant's configuration only to requests that name that
-> tenant. On the server we tested, `require_caller_identity: true` rejected an
-> anonymous read with `401` when the request carried `X-Tenant-ID`, and allowed
-> the identical read through when it did not. If you rely on that setting,
-> pin `STATEWAVE_TENANT_ID` so every retrieval is bound to the tenant that
-> enforces it.
+> Statewave applies a tenant's own config (e.g. `require_caller_identity`)
+> only to requests that name that tenant. On the server we tested, an
+> anonymous read carrying `X-Tenant-ID` got `401`, and the identical read with
+> no tenant went through. If you rely on that setting, pin
+> `STATEWAVE_TENANT_ID` so every retrieval is bound to it.
 
 ---
 
@@ -263,9 +255,10 @@ Setting **both** keeps token verification on while letting a trusted gateway
 choose the subject per request - it authenticates itself with a token, then
 names whichever subject it is acting for.
 
-> ⚠️ In this mode any valid token can name any subject. The tokens MUST be
-> minted by that gateway and never handed to end users - an end-user token here
-> is a key to every subject's memory.
+> [!WARNING]
+> In this mode any valid token can name any subject. Tokens MUST be minted by
+> that gateway and never handed to end users - an end-user token here is a key
+> to every subject's memory.
 
 ```bash
 # The proxy reads the secret from .env; this shell has to know it too.
