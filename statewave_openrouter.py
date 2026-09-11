@@ -152,11 +152,20 @@ def _spawn(coro) -> None:
     task.add_done_callback(_background.discard)
 
 
-def _statewave_headers(request: Request) -> dict[str, str]:
+def _statewave_headers(request: Request, claims: dict | None = None) -> dict[str, str]:
     headers = {}
     if STATEWAVE_KEY:
         headers["X-API-Key"] = STATEWAVE_KEY
-    tenant = STATEWAVE_TENANT or request.headers.get("x-tenant-id", "")
+    if STATEWAVE_TENANT:
+        tenant = STATEWAVE_TENANT
+    elif JWT_SECRET:
+        # JWT mode: the tenant comes from the verified token, never the client
+        # header - otherwise any caller with a valid token still picks the
+        # tenant (Kai review #1). No claim on the token means no tenant.
+        tenant = (claims or {}).get("tenant", "")
+        tenant = tenant if isinstance(tenant, str) else ""
+    else:
+        tenant = request.headers.get("x-tenant-id", "")
     if tenant:
         headers["X-Tenant-ID"] = tenant
     return headers
@@ -361,13 +370,17 @@ async def _write_turn(subject, session_id, user_text, reply, model, headers) -> 
         log.warning("statewave episode write failed for %s: %s", subject, exc)
 
 
-def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | None, JSONResponse | None]:
+def _resolve_subject(
+    request: Request, body: dict
+) -> tuple[str | None, str | None, dict | None, JSONResponse | None]:
     """Decide which subject this request is allowed to touch.
 
     Validate any supplied ids, then apply the trust rule: with `JWT_SECRET` set
     the subject comes from a verified token; without it a client-supplied
     subject is honoured only when `TRUST_CLIENT_SUBJECT` is on. Returns
-    ``(subject, session_id, error)`` - `error` is a response to return as-is.
+    ``(subject, session_id, claims, error)`` - `claims` is the verified token
+    (for `_statewave_headers` to pull a tenant from), `error` is a response to
+    return as-is.
     """
     # Pop first, then prefer the header: `header or body.pop(...)` skips the pop
     # whenever a header is set, leaving our field in the body sent upstream (F4).
@@ -377,7 +390,7 @@ def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | No
     session_id = request.headers.get("x-statewave-session") or body_session
     for field, value in (("subject", hdr_subject), ("session", session_id)):
         if value and not ID_RE.fullmatch(value):
-            return None, None, _error(
+            return None, None, None, _error(
                 400,
                 f"statewave {field} must be 1-256 chars of letters, digits, "
                 "underscore, dot, dash or colon",
@@ -389,7 +402,7 @@ def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | No
         if token[:7].lower() == "bearer ":
             token = token[7:].strip()
         if not token:
-            return None, None, _error(
+            return None, None, None, _error(
                 401, "statewave requires a token in X-Statewave-Token", "statewave_auth_required"
             )
         try:
@@ -397,22 +410,24 @@ def _resolve_subject(request: Request, body: dict) -> tuple[str | None, str | No
                 token, JWT_SECRET, algorithms=["HS256"], options={"require": ["exp"]}
             )
         except jwt.InvalidTokenError as exc:
-            return None, None, _error(401, f"invalid statewave token: {exc}", "statewave_bad_token")
+            return None, None, None, _error(
+                401, f"invalid statewave token: {exc}", "statewave_bad_token"
+            )
         subject = hdr_subject if (TRUST_CLIENT_SUBJECT and hdr_subject) else claims.get("sub")
         if subject and not ID_RE.fullmatch(subject):
-            return None, None, _error(
+            return None, None, None, _error(
                 400, "statewave token 'sub' is not a valid subject id", "statewave_bad_request"
             )
-        return subject, session_id, None
+        return subject, session_id, claims, None
 
     if hdr_subject and not TRUST_CLIENT_SUBJECT:
-        return None, None, _error(
+        return None, None, None, _error(
             400,
             "statewave subject supplied but not trusted: set PROXY_JWT_SECRET to derive it "
             "from a token, or STATEWAVE_TRUST_CLIENT_SUBJECT=1 to trust the header",
             "statewave_untrusted_subject",
         )
-    return hdr_subject, session_id, None
+    return hdr_subject, session_id, None, None
 
 
 async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json_reply, sse_pick):
@@ -422,10 +437,14 @@ async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json
         body = await request.json()
     except ValueError:
         return _error(400, "request body is not valid JSON", "statewave_bad_request")
-    subject, session_id, error = _resolve_subject(request, body)
+    if not isinstance(body, dict):
+        # A JSON array or scalar body used to reach `_resolve_subject`'s
+        # `body.pop(...)` and blow up as a TypeError/AttributeError -> 500.
+        return _error(400, "request body must be a JSON object", "statewave_bad_request")
+    subject, session_id, claims, error = _resolve_subject(request, body)
     if error:
         return error
-    sw_headers = _statewave_headers(request)
+    sw_headers = _statewave_headers(request, claims)
     prompt = get_prompt(body)
 
     if subject:
@@ -448,7 +467,10 @@ async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json
         except httpx.RequestError as exc:
             return _error(502, f"openrouter request failed: {exc}", "openrouter_unreachable")
         if subject and upstream.status_code < 400:
-            record(json_reply(upstream.json()))
+            try:
+                record(json_reply(upstream.json()))
+            except ValueError:
+                pass  # non-JSON 200 (e.g. an HTML maintenance page) - relay it, skip the episode
         return _relay(upstream)
 
     # Entered here rather than inside the generator: the upstream status and

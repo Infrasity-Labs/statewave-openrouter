@@ -169,6 +169,37 @@ async def test_pinned_tenant_beats_a_client_header(calls, proxy, monkeypatch, tr
     assert sent_to(calls, "/v1/episodes")[0].headers["X-Tenant-ID"] == "tenant-a"
 
 
+async def test_jwt_mode_ignores_the_client_tenant_header(calls, proxy, monkeypatch):
+    # Kai review #1: a valid token must not let the caller still pick the
+    # tenant. Unpinned deployment, tenant claim on the token wins over the
+    # client-supplied X-Tenant-ID.
+    monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
+    await proxy.post(
+        "/v1/chat/completions",
+        headers={
+            "X-Statewave-Token": token("user:42", tenant="tenant-a"),
+            "X-Tenant-ID": "tenant-b",
+        },
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    await drain()
+    assert sent_to(calls, "/v1/context")[0].headers["X-Tenant-ID"] == "tenant-a"
+    assert sent_to(calls, "/v1/episodes")[0].headers["X-Tenant-ID"] == "tenant-a"
+
+
+async def test_jwt_mode_with_no_tenant_claim_sends_no_tenant(calls, proxy, monkeypatch):
+    # No pinned tenant and no claim on the token: the client header must not
+    # be trusted as a fallback, or the hole reopens.
+    monkeypatch.setattr(sw, "JWT_SECRET", SECRET)
+    await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Token": token("user:42"), "X-Tenant-ID": "tenant-b"},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    await drain()
+    assert "X-Tenant-ID" not in sent_to(calls, "/v1/context")[0].headers
+
+
 async def test_no_subject_is_plain_passthrough(calls, proxy):
     await proxy.post(
         "/v1/chat/completions",
@@ -333,6 +364,44 @@ async def test_invalid_json_body_is_a_clean_400(calls, proxy):
     assert response.status_code == 400
     assert response.json()["error"]["type"] == "statewave_bad_request"
     assert calls == []
+
+
+@pytest.mark.parametrize("payload", [b"[1,2]", b'"hi"'])
+async def test_non_object_json_body_is_a_clean_400(calls, proxy, payload):
+    # Kai review #2: a JSON array or string body used to reach
+    # `_resolve_subject`'s `body.pop(...)` and 500 (TypeError/AttributeError).
+    response = await proxy.post(
+        "/v1/chat/completions",
+        headers={"Content-Type": "application/json"},
+        content=payload,
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "statewave_bad_request"
+    assert calls == []
+
+
+async def test_non_json_upstream_reply_is_relayed_not_500(proxy, monkeypatch, trusted):
+    # Kai review #2: OpenRouter answering 200 with a non-JSON body (e.g. an
+    # HTML maintenance page) used to blow up in upstream.json() on the
+    # non-stream path. The reply must still reach the client; only the
+    # episode write is skipped.
+    def handler(request):
+        if "openrouter" in request.url.host:
+            return httpx.Response(200, content=b"<html>down for maintenance</html>")
+        if request.url.path == "/v1/context":
+            return httpx.Response(200, json={"assembled_context": CONTEXT})
+        return httpx.Response(404, json={})
+
+    monkeypatch.setattr(sw, "client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    response = await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "user:42"},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    await drain()
+    assert response.status_code == 200
+    assert response.content == b"<html>down for maintenance</html>"
+    assert sw._background == set()  # no episode write was ever spawned
 
 
 async def test_openrouter_unreachable_is_a_502(proxy, monkeypatch):
