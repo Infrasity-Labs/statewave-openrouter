@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [Unreleased]
+
+### Security
+- In JWT mode (`PROXY_JWT_SECRET` set) with no pinned `STATEWAVE_TENANT_ID`,
+  the tenant now comes from a `tenant` claim on the verified token instead of
+  the client's `X-Tenant-ID` header. A caller with a valid token could
+  otherwise still pick any tenant; a token with no `tenant` claim now sends
+  no tenant at all, rather than falling back to the header.
+
+### Fixed
+- A JSON array or string request body (valid JSON, not an object) no longer
+  500s; it is rejected with `400 statewave_bad_request` before
+  `_resolve_subject` touches it.
+- OpenRouter answering `200` with a non-JSON body (e.g. an HTML maintenance
+  page) on the non-stream path no longer 500s; the response is relayed
+  unchanged and the episode write is skipped.
+
 ## [1.0.0] - 2026-09-08
 
 First stable release. The surface is complete; what is documented below is

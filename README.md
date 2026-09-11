@@ -224,6 +224,13 @@ Multi-tenant Statewave deployments: pin the tenant with `STATEWAVE_TENANT_ID`,
 or leave it unset and send `X-Tenant-ID` per request. A pinned tenant always
 wins over the header, so a caller cannot reach another tenant's memory.
 
+With `PROXY_JWT_SECRET` set and no pinned tenant, the tenant comes from a
+`tenant` claim on the verified token, never from the client's `X-Tenant-ID`
+header - a caller with a valid token still cannot pick the tenant. A token
+with no `tenant` claim sends no tenant at all. This lets one deployment serve
+several tenants safely off one set of signed tokens, each token naming its
+own tenant.
+
 > **The tenant is part of the memory's identity.** A turn written under one
 > tenant is read back only under that same tenant; how strictly a read under a
 > different tenant, or none at all, is walled off depends on the Statewave
