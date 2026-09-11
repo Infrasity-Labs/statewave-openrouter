@@ -1,3 +1,5 @@
+# statewave-openrouter
+
 <p align="center">
   <img src="docs/banner.svg" alt="statewave-openrouter - OpenAI-compatible proxy that gives OpenRouter calls Statewave memory" width="100%">
 </p>
