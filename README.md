@@ -168,21 +168,9 @@ Streaming needs no special handling - `stream=True` works as usual.
 
 ## How a request flows
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant P as statewave-openrouter
-    participant S as Statewave
-    participant O as OpenRouter
-
-    C->>P: POST /v1/chat/completions
-    P->>S: POST /v1/context (subject)
-    S-->>P: assembled_context
-    P->>O: messages = [system(context), ...original]
-    O-->>P: completion
-    P-->>C: completion (verbatim bytes)
-    P->>S: POST /v1/episodes (async, off the response path)
-```
+<p align="center">
+  <img src="docs/flow.svg" alt="Request flow: client calls statewave-openrouter, which fetches context from Statewave, forwards to OpenRouter, relays the reply, then writes the episode back to Statewave asynchronously" width="100%">
+</p>
 
 Three things worth knowing about that last step and the streaming case:
 
