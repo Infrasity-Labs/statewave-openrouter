@@ -19,6 +19,13 @@ All notable changes to this project are documented here. Format loosely follows
 - OpenRouter answering `200` with a non-JSON body (e.g. an HTML maintenance
   page) on the non-stream path no longer 500s; the response is relayed
   unchanged and the episode write is skipped.
+- The same guard now also covers a `200` whose body parses as JSON but is not
+  an object (e.g. `[1,2]`): that still reached the reply adapters and 500d on
+  `payload.get(...)`. Only a JSON object is read for a reply now.
+- An SSE `data:` line carrying valid JSON that is not an object no longer
+  raises mid-stream. The status was already sent, so this truncated the
+  client's stream instead of erroring; such a line now counts as carrying no
+  text, like a comment or `[DONE]`.
 
 ## [1.0.0] - 2026-09-08
 

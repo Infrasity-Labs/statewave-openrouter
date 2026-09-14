@@ -199,6 +199,8 @@ def _sse_event(line: bytes, pick) -> str:
         event = json.loads(line[5:])
     except ValueError:
         return ""
+    if not isinstance(event, dict):
+        return ""  # a scalar/array `data:` line carries no text either
     return pick(event) or ""
 
 
@@ -468,9 +470,13 @@ async def _memory_proxy(request: Request, path: str, *, get_prompt, inject, json
             return _error(502, f"openrouter request failed: {exc}", "openrouter_unreachable")
         if subject and upstream.status_code < 400:
             try:
-                record(json_reply(upstream.json()))
+                payload = upstream.json()
             except ValueError:
-                pass  # non-JSON 200 (e.g. an HTML maintenance page) - relay it, skip the episode
+                payload = None  # non-JSON 200, e.g. an HTML maintenance page
+            # Relay whatever came back either way; only a JSON object can be
+            # read for a reply, so anything else just skips the episode write.
+            if isinstance(payload, dict):
+                record(json_reply(payload))
         return _relay(upstream)
 
     # Entered here rather than inside the generator: the upstream status and

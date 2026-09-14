@@ -404,6 +404,66 @@ async def test_non_json_upstream_reply_is_relayed_not_500(proxy, monkeypatch, tr
     assert sw._background == set()  # no episode write was ever spawned
 
 
+@pytest.mark.parametrize("upstream", [b"[1,2]", b'"hi"', b"123"])
+async def test_json_non_object_upstream_reply_is_relayed_not_500(
+    proxy, monkeypatch, trusted, upstream
+):
+    # Same hole as the non-JSON 200 above, one step further in: the body parses
+    # as JSON but is not an object, so every `json_reply` adapter used to hit
+    # `payload.get(...)` -> AttributeError -> 500. ValueError alone missed it.
+    def handler(request):
+        if "openrouter" in request.url.host:
+            return httpx.Response(
+                200, content=upstream, headers={"content-type": "application/json"}
+            )
+        if request.url.path == "/v1/context":
+            return httpx.Response(200, json={"assembled_context": CONTEXT})
+        return httpx.Response(404, json={})
+
+    monkeypatch.setattr(sw, "client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    response = await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "user:42"},
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    await drain()
+    assert response.status_code == 200
+    assert response.content == upstream
+    assert sw._background == set()
+
+
+async def test_sse_non_object_data_line_does_not_truncate_the_stream(proxy, monkeypatch, trusted):
+    # The streaming twin of the case above, and worse: the 200 is already sent,
+    # so an AttributeError inside the generator cut the client's stream short
+    # instead of returning an error.
+    async def sse():
+        yield (
+            b"data: [1,2]\n\n"
+            b'data: {"choices":[{"delta":{"content":"dark roast"}}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+
+    def handler(request):
+        if "openrouter" in request.url.host:
+            return httpx.Response(
+                200, content=sse(), headers={"content-type": "text/event-stream"}
+            )
+        if request.url.path == "/v1/context":
+            return httpx.Response(200, json={"assembled_context": CONTEXT})
+        return httpx.Response(201, json={"id": "ep_1"})
+
+    monkeypatch.setattr(sw, "client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    response = await proxy.post(
+        "/v1/chat/completions",
+        headers={"X-Statewave-Subject": "user:42"},
+        json={"model": "x", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+    )
+    await drain()
+    assert response.status_code == 200
+    assert b"[DONE]" in response.content  # stream reached the end
+    assert b"dark roast" in response.content
+
+
 async def test_openrouter_unreachable_is_a_502(proxy, monkeypatch):
     def handler(request):
         if "openrouter" in request.url.host:
