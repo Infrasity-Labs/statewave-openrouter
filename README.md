@@ -164,6 +164,37 @@ client.chat.completions.create(
 
 Streaming needs no special handling - `stream=True` works as usual.
 
+### What the memory buys you
+
+The call above can answer that question because of one that came days
+earlier, in a different process, with nothing keeping the history but
+Statewave:
+
+```python
+# Monday. A throwaway script - the messages list dies with it.
+client.chat.completions.create(
+    model="openai/gpt-4o",
+    messages=[{"role": "user", "content": "I drink oat flat whites, never dairy."}],
+    extra_headers={"X-Statewave-Subject": "user:42"},
+)
+
+# Friday. Different process, empty history, same subject.
+client.chat.completions.create(
+    model="openai/gpt-4o",
+    messages=[{"role": "user", "content": "What coffee do I like?"}],
+    extra_headers={"X-Statewave-Subject": "user:42"},
+)
+```
+
+Friday's reply knows about Monday: *"Oat flat whites, and you avoid dairy."*
+Drop the `X-Statewave-Subject` header and the same call says it has no idea -
+no subject means no context fetched and no episode written, so the two calls
+are strangers. That header is the whole difference.
+
+> [!NOTE]
+> Replies above are illustrative. The wording is the model's; what the proxy
+> guarantees is that Monday's turn is in the context Friday's call is given.
+
 ---
 
 ## How a request flows
